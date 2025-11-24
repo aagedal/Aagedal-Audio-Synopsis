@@ -4,8 +4,12 @@ An open-source macOS meeting transcription app using AI, powered by Whisper.cpp 
 
 ## Features
 
-- Real-time meeting transcription using Whisper
-- AI-powered summarization with LLama
+- Meeting audio recording with timer display
+- Automatic transcription using Whisper.cpp
+- AI-powered summarization with LLama.cpp
+- Export transcriptions and summaries to text files
+- Progress indicators during processing
+- Clear and intuitive SwiftUI interface
 - Native macOS app for Apple Silicon (macOS 15+)
 - Open-source and privacy-focused
 
@@ -20,11 +24,13 @@ This app uses:
 
 1. Clone the repository
 2. Install dependencies: `brew install whisper-cpp llama.cpp`
-3. Download Whisper model: Visit https://ggml.ggerganov.com/ and download a model (e.g., ggml-base.bin)
-4. Download LLama model: Visit https://huggingface.co/ and download a compatible model
-5. Open the Xcode project
-6. Update model paths in the code
-7. Build and run
+3. Download models: Models are included in the models/ directory (ggml-tiny.bin for Whisper, tinyllama-1.1b-chat-v1.0.Q4_0.gguf for LLama)
+4. Open the Xcode project (MeetSum.xcodeproj)
+5. Build and run the app
+6. Grant microphone permission when prompted
+7. Click "Start Recording" to begin recording your meeting
+8. Click "Stop Recording" to process the audio and generate transcription and summary
+9. Use the export buttons to save results to files
 
 ## Future Plans
 
