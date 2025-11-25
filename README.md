@@ -23,14 +23,19 @@ This app uses:
 ## Getting Started
 
 1. Clone the repository
-2. Install dependencies: `brew install whisper-cpp llama.cpp`
-3. Download models: Models are included in the models/ directory (ggml-tiny.bin for Whisper, tinyllama-1.1b-chat-v1.0.Q4_0.gguf for LLama)
-4. Open the Xcode project (MeetSum.xcodeproj)
-5. Build and run the app
-6. Grant microphone permission when prompted
-7. Click "Start Recording" to begin recording your meeting
-8. Click "Stop Recording" to process the audio and generate transcription and summary
-9. Use the export buttons to save results to files
+2. Open the Xcode project (MeetSum.xcodeproj)
+3. Ensure the `bin/` and `models/` folders are added to the project and copied to Resources in Build Phases
+4. Build and run the app
+5. Grant microphone permission when prompted
+6. Click "Start Recording" to begin recording your meeting
+7. Click "Stop Recording" to process the audio and generate transcription and summary
+8. Use the export buttons to save results to files
+
+## Development Notes
+
+- AI models and binaries are embedded in the app bundle for portability
+- No external dependencies required for end users
+- App runs in sandboxed environment
 
 ## Future Plans
 
