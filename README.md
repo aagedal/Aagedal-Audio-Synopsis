@@ -1,52 +1,22 @@
 # MeetSum
-
-An open-source macOS meeting transcription app using AI, powered by Whisper.cpp and LLama.cpp.
+An open-source macOS meeting transcription app using AI, powered by Whisper.cpp and MLX.
 
 ## Features
 
 - Meeting audio recording with timer display
-- Automatic transcription using Whisper.cpp
-- AI-powered summarization with LLama.cpp
-- Export transcriptions and summaries to text files
-- Progress indicators during processing
+- Automatic transcription using Whisper.cpp, with segmentation to reduce latency to output.
+- AI-powered summarization with MLX
+- Export transcriptions and summaries to text files and markdown
 - Clear and intuitive SwiftUI interface
 - Native macOS app for Apple Silicon (macOS 15+)
 - Open-source and privacy-focused
 
 ## Development
-
 This app uses:
 - Whisper.cpp for speech-to-text transcription
-- LLama.cpp for AI summarization
+- MLX for AI summarization
 - SwiftUI for the native macOS interface
 
-## Getting Started
-
-1. Clone the repository
-2. Open the Xcode project (MeetSum.xcodeproj)
-3. Ensure the `bin/` and `models/` folders are added to the project and copied to Resources in Build Phases
-4. Build and run the app
-5. Grant microphone permission when prompted
-6. Click "Start Recording" to begin recording your meeting
-7. Click "Stop Recording" to process the audio and generate transcription and summary
-8. Use the export buttons to save results to files
-
-## Development Notes
-
-- AI models and binaries are embedded in the app bundle for portability
-- No external dependencies required for end users
-- App runs in sandboxed environment
-
-## Future Plans
-
-- Embed Whisper.cpp and LLama.cpp directly into the app for better performance and offline capability
-- Real-time transcription streaming
-- Support for multiple languages
-- Export transcriptions and summaries
-
-## Contributing
-
-Contributions welcome! Please open issues and pull requests on GitHub.
 
 ## License
 
