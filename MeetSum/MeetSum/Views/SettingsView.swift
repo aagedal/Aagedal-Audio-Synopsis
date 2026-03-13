@@ -25,6 +25,8 @@ struct SettingsView: View {
     @State private var disableThinking: Bool = ModelSettings.disableModelThinking
     @State private var transcriptionLanguage: String = ModelSettings.transcriptionLanguage
     @State private var modelToDelete: ModelMetadata?
+    @State private var maxOutputTokens: Double = Double(ModelSettings.maxOutputTokens)
+    @State private var summarizationLanguage: String = ModelSettings.summarizationLanguage
 
     var body: some View {
         TabView {
@@ -69,9 +71,16 @@ struct SettingsView: View {
                 VStack(spacing: 24) {
                     summarizationEngineSection
 
+                    Divider()
+                    summarizationLanguageSection
+
                     if selectedEngine == .mlx {
                         Divider()
                         mlxModelSection
+                        Divider()
+                        summaryLengthSection
+                        Divider()
+                        contextCapacitySection
                         Divider()
                         thinkingSection
                     }
@@ -658,6 +667,93 @@ struct SettingsView: View {
                 .background(Color(NSColor.controlBackgroundColor))
                 .cornerRadius(8)
             }
+        }
+    }
+
+    // MARK: - Summarization Language Section
+
+    private var summarizationLanguageSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Summary Language", systemImage: "globe")
+                .font(.headline)
+
+            Text("Choose the language for generated summaries. \"Match transcript/notes language\" will write the summary in the notes language if provided, otherwise in the transcript language.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Picker("Language", selection: $summarizationLanguage) {
+                ForEach(ModelSettings.summarizationLanguages, id: \.code) { lang in
+                    Text(lang.name).tag(lang.code)
+                }
+            }
+            .labelsHidden()
+            .onChange(of: summarizationLanguage) { _, newValue in
+                ModelSettings.summarizationLanguage = newValue
+            }
+        }
+    }
+
+    // MARK: - Summary Length Section
+
+    private var summaryLengthSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Summary Length", systemImage: "text.justify.left")
+                .font(.headline)
+
+            Text("Maximum number of tokens the model can generate for a summary. Higher values produce longer, more detailed summaries.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            HStack {
+                Slider(value: $maxOutputTokens, in: 500...8000, step: 500)
+                    .onChange(of: maxOutputTokens) { _, newValue in
+                        ModelSettings.maxOutputTokens = Int(newValue)
+                    }
+
+                Text("\(Int(maxOutputTokens)) tokens")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .frame(width: 100, alignment: .trailing)
+            }
+        }
+    }
+
+    // MARK: - Context Capacity Section
+
+    private var contextCapacitySection: some View {
+        let contextWindow = ModelMetadata.contextWindowForCurrentModel()
+        let outputBudget = ModelSettings.maxOutputTokens
+        let inputBudget = Int(Double(contextWindow) * 0.8) - outputBudget
+        let estimatedMinutes = max(0, inputBudget / 200)
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Label("Context Capacity", systemImage: "gauge.with.dots.needle.33percent")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Model context window:")
+                    Spacer()
+                    Text("\(contextWindow.formatted()) tokens")
+                        .foregroundColor(.secondary)
+                }
+                .font(.caption)
+
+                HStack {
+                    Text("Estimated single-pass capacity:")
+                    Spacer()
+                    Text("~\(estimatedMinutes) minutes of meeting audio")
+                        .foregroundColor(.secondary)
+                }
+                .font(.caption)
+            }
+            .padding()
+            .background(Color(NSColor.controlBackgroundColor))
+            .cornerRadius(8)
+
+            Text("Longer meetings are automatically handled with multi-pass summarization, where the transcript is split into chunks and summaries are merged.")
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
     }
 

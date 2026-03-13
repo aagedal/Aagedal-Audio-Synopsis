@@ -226,6 +226,10 @@ class MeetingViewModel: ObservableObject {
             notes: notes
         )
 
+        // Set transcription immediately so the view has content before the async task runs
+        recordingSession?.transcription = liveTranscription
+        recordingSession?.segments = liveSegments
+
         Logger.info("Recording session created with duration: \(totalDuration)", category: Logger.ui)
 
         // Load HQ file for playback (falls back to whisper file for old recordings)
@@ -463,6 +467,50 @@ class MeetingViewModel: ObservableObject {
         Logger.info("User exporting summary as markdown", category: Logger.ui)
         let cleaned = ThinkingTagParser.parse(summary).visibleContent
         exportFile(cleaned, filename: "\(exportPrefix)_summary.md", contentType: UTType(filenameExtension: "md", conformingTo: .text) ?? .plainText)
+    }
+
+    func exportCombinedMarkdown() {
+        guard let session = recordingSession else { return }
+        Logger.info("User exporting combined markdown", category: Logger.ui)
+
+        var md = "# \(session.title)\n\n"
+
+        // Date + duration header
+        let formatter = DateFormatter()
+        formatter.dateStyle = .long
+        formatter.timeStyle = .short
+        md += "**Date:** \(formatter.string(from: session.createdAt))"
+        if session.duration > 0 {
+            md += "  |  **Duration:** \(AudioUtils.formatDuration(session.duration))"
+        }
+        md += "\n\n"
+
+        // Summary section
+        let cleanedSummary = ThinkingTagParser.parse(session.summary).visibleContent
+        if !cleanedSummary.isEmpty {
+            md += "## Summary\n\n\(cleanedSummary)\n\n"
+        }
+
+        // Notes section
+        let trimmedNotes = session.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedNotes.isEmpty {
+            md += "## Notes\n\n\(trimmedNotes)\n\n"
+        }
+
+        // Transcript section
+        if !session.transcription.isEmpty {
+            md += "## Transcript\n\n"
+            if !session.segments.isEmpty {
+                for segment in session.segments {
+                    md += "**[\(segment.timecode)]** \(segment.text)\n\n"
+                }
+            } else {
+                md += session.transcription + "\n"
+            }
+        }
+
+        let mdType = UTType(filenameExtension: "md", conformingTo: .text) ?? .plainText
+        exportFile(md, filename: "\(exportPrefix)_meeting.md", contentType: mdType)
     }
 
     // MARK: - Redo Commands

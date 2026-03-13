@@ -170,6 +170,19 @@ struct ContentView: View {
             }
 
             ToolbarItem(placement: .automatic) {
+                if !viewModel.isRecording && !viewModel.isPaused && !viewModel.isNewMeetingMode &&
+                    viewModel.recordingSession != nil &&
+                    (!viewModel.transcription.isEmpty || !viewModel.summary.isEmpty) {
+                    Button(action: {
+                        viewModel.exportCombinedMarkdown()
+                    }) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                    .help("Export meeting as Markdown")
+                }
+            }
+
+            ToolbarItem(placement: .automatic) {
                 Button(action: {
                     openWindow(id: "settings")
                 }) {

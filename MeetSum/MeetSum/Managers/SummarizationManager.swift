@@ -93,7 +93,18 @@ class SummarizationManager: ObservableObject {
         let result: String?
         switch engine {
         case .mlx:
-            result = await summarizeWithMLX(transcription: transcription, notes: notes)
+            // Check if chunked summarization is needed
+            let contextWindow = ModelMetadata.contextWindowForCurrentModel()
+            let maxOutputTokens = ModelSettings.maxOutputTokens
+            let inputBudget = Int(Double(contextWindow) * 0.8) - maxOutputTokens
+            let estimatedInputTokens = transcription.count / 4
+
+            if estimatedInputTokens > inputBudget {
+                Logger.info("Transcript exceeds context budget (\(estimatedInputTokens) est. tokens vs \(inputBudget) budget), using chunked summarization", category: Logger.processing)
+                result = await summarizeChunked(transcription: transcription, notes: notes, charBudget: inputBudget * 4)
+            } else {
+                result = await summarizeWithMLX(transcription: transcription, notes: notes)
+            }
         case .appleIntelligence:
             result = await summarizeWithAppleIntelligence(transcription: transcription, notes: notes)
         }
@@ -118,6 +129,15 @@ class SummarizationManager: ObservableObject {
             \(notes)
             """
         }
+    }
+
+    /// Returns a language instruction to append to the system prompt, or empty string for auto
+    private static func languageInstruction() -> String {
+        let lang = ModelSettings.summarizationLanguage
+        if lang == "auto" {
+            return " Write your summary in the same language as the user's notes if provided, otherwise match the language of the transcript."
+        }
+        return " Write your summary in \(lang)."
     }
 
     // MARK: - MLX Summarization
@@ -146,6 +166,7 @@ class SummarizationManager: ObservableObject {
         progress = "Generating summary..."
 
         var systemPrompt = ModelSettings.summarizationSystemPrompt
+        systemPrompt += Self.languageInstruction()
         if ModelSettings.disableModelThinking {
             systemPrompt += " /no_think"
         }
@@ -157,7 +178,7 @@ class SummarizationManager: ObservableObject {
             ]
         )
 
-        let maxTokens = 2000
+        let maxTokens = ModelSettings.maxOutputTokens
 
         do {
             let result = try await container.perform { context in
@@ -196,12 +217,62 @@ class SummarizationManager: ObservableObject {
         }
     }
 
+    // MARK: - Chunked Summarization
+
+    private func summarizeChunked(transcription: String, notes: String, charBudget: Int) async -> String? {
+        // Split transcript into chunks at line boundaries
+        let lines = transcription.components(separatedBy: "\n")
+        var chunks: [String] = []
+        var currentChunk = ""
+
+        for line in lines {
+            if !currentChunk.isEmpty && (currentChunk.count + line.count + 1) > charBudget {
+                chunks.append(currentChunk)
+                currentChunk = line
+            } else {
+                if !currentChunk.isEmpty { currentChunk += "\n" }
+                currentChunk += line
+            }
+        }
+        if !currentChunk.isEmpty {
+            chunks.append(currentChunk)
+        }
+
+        let totalParts = chunks.count
+        Logger.info("Splitting transcript into \(totalParts) chunks for summarization", category: Logger.processing)
+
+        // Summarize each chunk
+        var chunkSummaries: [String] = []
+        for (index, chunk) in chunks.enumerated() {
+            progress = "Summarizing part \(index + 1) of \(totalParts)..."
+            let notesForChunk = index == 0 ? notes : ""
+            guard let summary = await summarizeWithMLX(transcription: chunk, notes: notesForChunk) else {
+                Logger.error("Chunk \(index + 1) summarization failed", category: Logger.processing)
+                return nil
+            }
+            chunkSummaries.append(summary)
+        }
+
+        // Final merge pass
+        if chunkSummaries.count == 1 {
+            return chunkSummaries[0]
+        }
+
+        progress = "Merging summaries..."
+        let combined = chunkSummaries.enumerated()
+            .map { "Part \($0.offset + 1):\n\($0.element)" }
+            .joined(separator: "\n\n")
+
+        let mergeTranscription = "The following are summaries of consecutive parts of a long meeting. Please merge them into a single cohesive summary:\n\n\(combined)"
+        return await summarizeWithMLX(transcription: mergeTranscription, notes: "")
+    }
+
     // MARK: - Apple Intelligence Summarization
 
     private func summarizeWithAppleIntelligence(transcription: String, notes: String = "") async -> String? {
         progress = "Summarizing with Apple Intelligence..."
 
-        let systemPrompt = ModelSettings.summarizationSystemPrompt
+        let systemPrompt = ModelSettings.summarizationSystemPrompt + Self.languageInstruction()
         let userContent = Self.buildUserPrompt(transcription: transcription, notes: notes)
         let prompt = """
         \(systemPrompt)

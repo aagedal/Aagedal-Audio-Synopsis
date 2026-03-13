@@ -33,6 +33,9 @@ struct ModelMetadata: Identifiable, Codable, Hashable {
     /// HuggingFace model ID for MLX models (used by MLXLLM)
     let huggingFaceId: String?
 
+    /// Context window size in tokens (nil for Whisper models)
+    let contextWindowTokens: Int?
+
     var sizeMB: Double {
         Double(sizeBytes) / 1_048_576.0
     }
@@ -45,7 +48,7 @@ struct ModelMetadata: Identifiable, Codable, Hashable {
         }
     }
 
-    init(id: String, name: String, type: ModelType, filename: String, downloadURL: URL, sizeBytes: Int64, description: String, huggingFaceId: String? = nil) {
+    init(id: String, name: String, type: ModelType, filename: String, downloadURL: URL, sizeBytes: Int64, description: String, huggingFaceId: String? = nil, contextWindowTokens: Int? = nil) {
         self.id = id
         self.name = name
         self.type = type
@@ -54,6 +57,7 @@ struct ModelMetadata: Identifiable, Codable, Hashable {
         self.sizeBytes = sizeBytes
         self.description = description
         self.huggingFaceId = huggingFaceId
+        self.contextWindowTokens = contextWindowTokens
     }
 
     // MARK: - Whisper Models
@@ -118,7 +122,8 @@ struct ModelMetadata: Identifiable, Codable, Hashable {
         downloadURL: URL(string: "https://huggingface.co/mlx-community/Qwen3-4B-4bit")!,
         sizeBytes: 2_700_000_000,
         description: "Compact and fast. Good balance of quality and speed. ~3GB memory.",
-        huggingFaceId: "mlx-community/Qwen3-4B-4bit"
+        huggingFaceId: "mlx-community/Qwen3-4B-4bit",
+        contextWindowTokens: 32_768
     )
 
     static let gptOss20b_mlx = ModelMetadata(
@@ -129,7 +134,8 @@ struct ModelMetadata: Identifiable, Codable, Hashable {
         downloadURL: URL(string: "https://huggingface.co/mlx-community/gpt-oss-20b-MXFP4-Q4")!,
         sizeBytes: 11_000_000_000,
         description: "High quality summaries. Requires ~12GB memory. Slower but more capable.",
-        huggingFaceId: "mlx-community/gpt-oss-20b-MXFP4-Q4"
+        huggingFaceId: "mlx-community/gpt-oss-20b-MXFP4-Q4",
+        contextWindowTokens: 32_768
     )
 
     static let qwen35_9b_mlx = ModelMetadata(
@@ -140,7 +146,8 @@ struct ModelMetadata: Identifiable, Codable, Hashable {
         downloadURL: URL(string: "https://huggingface.co/mlx-community/Qwen3.5-9B-MLX-4bit")!,
         sizeBytes: 5_500_000_000,
         description: "Mid-size model. Higher quality than 4B with moderate memory use. ~6GB memory.",
-        huggingFaceId: "mlx-community/Qwen3.5-9B-MLX-4bit"
+        huggingFaceId: "mlx-community/Qwen3.5-9B-MLX-4bit",
+        contextWindowTokens: 131_072
     )
 
     static let gemma3_12b_mlx = ModelMetadata(
@@ -151,7 +158,8 @@ struct ModelMetadata: Identifiable, Codable, Hashable {
         downloadURL: URL(string: "https://huggingface.co/mlx-community/gemma-3-12b-it-4bit")!,
         sizeBytes: 7_600_000_000,
         description: "Google's Gemma 3 instruction-tuned. Strong summarization quality. ~8GB memory.",
-        huggingFaceId: "mlx-community/gemma-3-12b-it-4bit"
+        huggingFaceId: "mlx-community/gemma-3-12b-it-4bit",
+        contextWindowTokens: 131_072
     )
 
     static let allModels: [ModelMetadata] = [
@@ -170,4 +178,13 @@ struct ModelMetadata: Identifiable, Codable, Hashable {
         whisperBase,
         qwen3_4b_mlx
     ]
+
+    /// Returns the context window size for the currently selected MLX model, defaulting to 32,768
+    static func contextWindowForCurrentModel() -> Int {
+        let selectedId = ModelSettings.selectedMLXModel
+        if let model = allModels.first(where: { $0.huggingFaceId == selectedId || $0.id == selectedId }) {
+            return model.contextWindowTokens ?? 32_768
+        }
+        return 32_768
+    }
 }

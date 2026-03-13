@@ -49,6 +49,8 @@ struct ModelSettings {
         static let captureMicrophone = "captureMicrophone"
         static let transcriptionLanguage = "transcriptionLanguage"
         static let insertTimecodeInNotes = "insertTimecodeInNotes"
+        static let maxOutputTokens = "maxOutputTokens"
+        static let summarizationLanguage = "summarizationLanguage"
     }
 
     // MARK: - Defaults
@@ -184,6 +186,54 @@ struct ModelSettings {
         }
         set {
             defaults.set(newValue, forKey: Keys.insertTimecodeInNotes)
+        }
+    }
+
+    // MARK: - Summarization Language
+
+    /// Language preference for summary output ("auto", or a language name)
+    static var summarizationLanguage: String {
+        get {
+            defaults.string(forKey: Keys.summarizationLanguage) ?? "auto"
+        }
+        set {
+            defaults.set(newValue, forKey: Keys.summarizationLanguage)
+            Logger.info("Summarization language: \(newValue)", category: Logger.general)
+        }
+    }
+
+    /// Language options for summarization output
+    static let summarizationLanguages: [(code: String, name: String)] = [
+        ("auto", "Match transcript/notes language"),
+        ("English", "English"),
+        ("Chinese", "Chinese"),
+        ("German", "German"),
+        ("Spanish", "Spanish"),
+        ("Russian", "Russian"),
+        ("Korean", "Korean"),
+        ("French", "French"),
+        ("Japanese", "Japanese"),
+        ("Portuguese", "Portuguese"),
+        ("Dutch", "Dutch"),
+        ("Italian", "Italian"),
+        ("Swedish", "Swedish"),
+        ("Danish", "Danish"),
+        ("Norwegian", "Norwegian"),
+        ("Finnish", "Finnish"),
+        ("Polish", "Polish"),
+    ]
+
+    // MARK: - Output Token Limit
+
+    /// Maximum number of tokens for summary output (default: 2000, range: 500-8000)
+    static var maxOutputTokens: Int {
+        get {
+            let value = defaults.integer(forKey: Keys.maxOutputTokens)
+            return value > 0 ? value : 2000
+        }
+        set {
+            defaults.set(newValue, forKey: Keys.maxOutputTokens)
+            Logger.info("Max output tokens: \(newValue)", category: Logger.general)
         }
     }
 
@@ -331,6 +381,8 @@ struct ModelSettings {
         defaults.removeObject(forKey: Keys.captureMicrophone)
         defaults.removeObject(forKey: Keys.transcriptionLanguage)
         defaults.removeObject(forKey: Keys.insertTimecodeInNotes)
+        defaults.removeObject(forKey: Keys.maxOutputTokens)
+        defaults.removeObject(forKey: Keys.summarizationLanguage)
         Logger.info("Model settings reset", category: Logger.general)
     }
 }
