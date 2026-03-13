@@ -53,7 +53,7 @@ struct MeetingDetailView: View {
                     // Notes panel (always visible, persists across tabs)
                     NotesView(
                         text: $viewModel.notes,
-                        isRecording: viewModel.isRecording,
+                        isRecording: viewModel.isRecording || viewModel.isPaused,
                         currentTimestamp: {
                             let total = Int(viewModel.currentRecordingTimeInterval)
                             let m = total / 60
@@ -73,7 +73,7 @@ struct MeetingDetailView: View {
     // MARK: - Header
 
     private var canEditTitle: Bool {
-        viewModel.isNewMeetingMode || (!viewModel.isRecording && recordingSession != nil)
+        viewModel.isNewMeetingMode || (!viewModel.isRecording && !viewModel.isPaused && recordingSession != nil)
     }
 
     private var recordingSession: RecordingSession? {
@@ -116,15 +116,24 @@ struct MeetingDetailView: View {
 
     private var transcriptTab: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if viewModel.isRecording {
-                // Live transcription during recording
+            if viewModel.isRecording || viewModel.isPaused {
+                // Live transcription during recording (or paused)
                 HStack {
                     Label("Live Transcript", systemImage: "text.quote")
                         .font(.headline)
 
                     Spacer()
 
-                    if !viewModel.liveSegments.isEmpty {
+                    if viewModel.isPaused {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(Color.orange)
+                                .frame(width: 8, height: 8)
+                            Text("Paused")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
+                    } else if !viewModel.liveSegments.isEmpty {
                         HStack(spacing: 4) {
                             Circle()
                                 .fill(Color.red)
@@ -179,7 +188,7 @@ struct MeetingDetailView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(viewModel.isRecording || viewModel.isProcessing || viewModel.recordingSession?.audioFileURL == nil)
+                    .disabled(viewModel.isRecording || viewModel.isPaused || viewModel.isProcessing || viewModel.recordingSession?.audioFileURL == nil)
                     .help("Re-transcribe audio")
 
                     Button(action: {
@@ -270,8 +279,8 @@ struct MeetingDetailView: View {
 
     private var summaryTab: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if viewModel.isRecording {
-                // During recording
+            if viewModel.isRecording || viewModel.isPaused {
+                // During recording or paused
                 VStack(spacing: 12) {
                     Image(systemName: "sparkles")
                         .font(.system(size: 40))
@@ -311,7 +320,7 @@ struct MeetingDetailView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(viewModel.isRecording || viewModel.isProcessing)
+                    .disabled(viewModel.isRecording || viewModel.isPaused || viewModel.isProcessing)
                     .help("Re-summarize transcription")
 
                     Menu {

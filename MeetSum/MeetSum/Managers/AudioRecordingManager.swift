@@ -14,6 +14,7 @@ enum RecordingState {
     case idle
     case starting
     case recording
+    case paused
 }
 
 /// Info about a completed audio segment ready for transcription
@@ -70,10 +71,18 @@ class AudioRecordingManager: NSObject, ObservableObject {
     // Drain timer for system-audio-only mode (no mic tap to drive writes)
     private var drainTimer: DispatchSourceTimer?
 
+    // Pause/resume support
+    private var accumulatedTime: TimeInterval = 0
+    private var timeOffset: TimeInterval = 0
+
     // MARK: - Public Methods
 
     var isRecording: Bool {
         recordingState == .starting || recordingState == .recording
+    }
+
+    var isPaused: Bool {
+        recordingState == .paused
     }
 
     func startRecording() {
@@ -82,6 +91,8 @@ class AudioRecordingManager: NSObject, ObservableObject {
         error = nil
         guard recordingState == .idle else { return }
         recordingState = .starting
+        accumulatedTime = 0
+        timeOffset = 0
 
         let useMic = ModelSettings.captureMicrophone
         let useSystemAudio = ModelSettings.captureSystemAudio
@@ -225,10 +236,152 @@ class AudioRecordingManager: NSObject, ObservableObject {
         }
     }
 
+    /// Pause recording — tears down audio engine but keeps file handles open
+    func pauseRecording() {
+        guard recordingState == .recording else { return }
+        Logger.info("Pausing audio recording", category: Logger.audio)
+
+        stopTimer()
+        stopDrainTimer()
+
+        // Stop engine
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        audioEngine?.stop()
+        audioEngine = nil
+
+        // Stop system audio capture
+        let capture = systemAudioCapture
+        systemAudioCapture = nil
+        mixingBuffer?.reset()
+        mixingBuffer = nil
+        if let capture = capture {
+            Task { await capture.stopCapture() }
+        }
+
+        // Finalize current segment but keep recording file open
+        segmentQueue.sync {
+            self.finalizeCurrentSegment(publish: true)
+        }
+
+        // Update WAV header for crash safety (but don't close the handle)
+        if let url = currentFileURL, recordingDataSize > 0 {
+            AudioUtils.updateWAVHeader(at: url, dataSize: recordingDataSize)
+        }
+
+        // Save accumulated time
+        accumulatedTime = recordingTime
+
+        recordingState = .paused
+        Logger.info("Recording paused at \(AudioUtils.formatDuration(accumulatedTime))", category: Logger.audio)
+    }
+
+    /// Resume recording from paused state
+    func resumeRecording() {
+        guard recordingState == .paused else { return }
+        Logger.info("Resuming audio recording", category: Logger.audio)
+        recordingState = .starting
+
+        timeOffset = accumulatedTime
+
+        let useMic = ModelSettings.captureMicrophone
+        let useSystemAudio = ModelSettings.captureSystemAudio
+
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self = self else { return }
+
+            do {
+                // Setup microphone via AVAudioEngine (if enabled)
+                var engine: AVAudioEngine?
+                if useMic {
+                    let eng = AVAudioEngine()
+                    let inputNode = eng.inputNode
+                    let inputFormat = inputNode.outputFormat(forBus: 0)
+                    let targetFormat = AudioUtils.whisperRecordingFormat
+
+                    inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
+                        guard let self = self else { return }
+                        self.segmentQueue.async {
+                            try? self.playbackFile?.write(from: buffer)
+                            if self.mixingBuffer != nil {
+                                self.processAudioBufferMixed(buffer, from: inputFormat)
+                            } else {
+                                self.processAudioBuffer(buffer, from: inputFormat, to: targetFormat)
+                            }
+                        }
+                    }
+
+                    engine = eng
+                }
+
+                // Start system audio capture (if enabled)
+                if useSystemAudio {
+                    let buffer = AudioMixingBuffer(capacity: 32000)
+                    let capture = SystemAudioCapture(mixingBuffer: buffer)
+                    do {
+                        try await capture.startCapture()
+                        await MainActor.run {
+                            self.mixingBuffer = buffer
+                            self.systemAudioCapture = capture
+                        }
+                    } catch {
+                        Logger.warning("System audio capture failed on resume: \(error.localizedDescription)", category: Logger.audio)
+                    }
+                }
+
+                // Start the engine or drain timer
+                if let engine = engine {
+                    try engine.start()
+                } else {
+                    let hasSystemAudio = await MainActor.run { self.systemAudioCapture != nil }
+                    if hasSystemAudio {
+                        await MainActor.run { self.startDrainTimer() }
+                    }
+                }
+
+                // Open new segment file (continuing from current index)
+                await MainActor.run {
+                    self.audioEngine = engine
+                    self.openNewSegment()
+                    self.startTime = Date()
+                    self.startTimer()
+                    self.recordingState = .recording
+
+                    var sources: [String] = []
+                    if useMic { sources.append("mic") }
+                    if self.systemAudioCapture != nil { sources.append("system") }
+                    Logger.info("Recording resumed [\(sources.joined(separator: "+"))]", category: Logger.audio)
+                }
+            } catch {
+                await MainActor.run {
+                    Logger.error("Failed to resume recording", error: error, category: Logger.audio)
+                    self.error = error
+                    self.recordingState = .paused
+                }
+            }
+        }
+    }
+
     /// Stop recording audio
     /// - Returns: URL of the 16kHz Whisper file, or nil if recording failed
     func stopRecording() -> URL? {
         Logger.info("Stopping audio recording", category: Logger.audio)
+
+        if recordingState == .paused {
+            // Already paused — just finalize the recording file
+            segmentQueue.sync {
+                self.finalizeRecordingFile()
+                self.playbackFile = nil
+            }
+            recordingState = .idle
+            accumulatedTime = 0
+            timeOffset = 0
+
+            let fileURL = currentFileURL
+            if let url = fileURL, FileManager.default.fileExists(atPath: url.path) {
+                Logger.info("Paused recording finalized. File saved at: \(url.path)", category: Logger.audio)
+            }
+            return fileURL
+        }
 
         stopTimer()
         stopDrainTimer()
@@ -254,6 +407,10 @@ class AudioRecordingManager: NSObject, ObservableObject {
             self.finalizeRecordingFile()
             self.playbackFile = nil
         }
+
+        // Reset pause/resume state
+        accumulatedTime = 0
+        timeOffset = 0
 
         let fileURL = currentFileURL
 
@@ -388,9 +545,9 @@ class AudioRecordingManager: NSObject, ObservableObject {
                 let publishURL = url
                 let offset: TimeInterval
                 if let segStart = segmentStartTime, let recStart = startTime {
-                    offset = segStart.timeIntervalSince(recStart)
+                    offset = timeOffset + segStart.timeIntervalSince(recStart)
                 } else {
-                    offset = 0
+                    offset = timeOffset
                 }
                 Task { @MainActor in
                     self.newSegment = SegmentInfo(url: publishURL, startTime: offset)
@@ -501,7 +658,7 @@ class AudioRecordingManager: NSObject, ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self, let start = self.startTime else { return }
             Task { @MainActor in
-                self.recordingTime = Date().timeIntervalSince(start)
+                self.recordingTime = self.accumulatedTime + Date().timeIntervalSince(start)
             }
         }
     }

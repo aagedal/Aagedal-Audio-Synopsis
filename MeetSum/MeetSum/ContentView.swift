@@ -49,24 +49,86 @@ struct ContentView: View {
                     // Record/Play/Stop button
                     Group {
                         if viewModel.isRecording || viewModel.isStartingRecording {
-                            Button(action: {
-                                if viewModel.recordingState == .recording {
-                                    viewModel.stopRecording()
+                            // While recording: Pause + End buttons
+                            HStack(spacing: 8) {
+                                Button(action: {
+                                    if viewModel.recordingState == .recording {
+                                        viewModel.pauseRecording()
+                                    }
+                                }) {
+                                    HStack(spacing: 6) {
+                                        if viewModel.isStartingRecording {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                        } else {
+                                            Image(systemName: "pause.circle.fill")
+                                                .foregroundColor(.orange)
+                                        }
+                                        Text(viewModel.isRecording ? viewModel.recordingTime : "Starting...")
+                                            .monospacedDigit()
+                                    }
                                 }
-                            }) {
-                                HStack(spacing: 6) {
-                                    if viewModel.isStartingRecording {
-                                        ProgressView()
-                                            .controlSize(.small)
-                                    } else {
+                                .disabled(viewModel.isStartingRecording)
+
+                                Button(action: {
+                                    viewModel.stopRecording()
+                                }) {
+                                    HStack(spacing: 6) {
                                         Image(systemName: "stop.circle.fill")
                                             .foregroundColor(.red)
+                                        Text("End")
                                     }
-                                    Text(viewModel.isRecording ? viewModel.recordingTime : "Starting...")
-                                        .monospacedDigit()
                                 }
+                                .disabled(viewModel.isStartingRecording)
                             }
-                            .disabled(viewModel.isStartingRecording)
+                        } else if viewModel.isPaused {
+                            // While paused: Continue + End Meeting + audio toggles
+                            HStack(spacing: 8) {
+                                Button(action: { viewModel.continueRecording() }) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "record.circle")
+                                            .foregroundColor(.red)
+                                        Text("Continue")
+                                    }
+                                }
+
+                                Button(action: { viewModel.stopRecording() }) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "stop.circle.fill")
+                                            .foregroundColor(.red)
+                                        Text("End Meeting")
+                                    }
+                                }
+
+                                Text(viewModel.recordingTime)
+                                    .monospacedDigit()
+                                    .foregroundColor(.secondary)
+
+                                Text("Paused")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+
+                                Button(action: {
+                                    captureMicrophone.toggle()
+                                    ModelSettings.captureMicrophone = captureMicrophone
+                                }) {
+                                    Image(systemName: captureMicrophone ? "mic.fill" : "mic.slash")
+                                        .foregroundColor(captureMicrophone ? .blue : .secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .help(captureMicrophone ? "Microphone on" : "Microphone off")
+
+                                Button(action: {
+                                    captureSystemAudio.toggle()
+                                    ModelSettings.captureSystemAudio = captureSystemAudio
+                                }) {
+                                    Image(systemName: captureSystemAudio ? "macbook" : "macbook")
+                                        .foregroundColor(captureSystemAudio ? .blue : .secondary)
+                                        .opacity(captureSystemAudio ? 1.0 : 0.4)
+                                }
+                                .buttonStyle(.plain)
+                                .help(captureSystemAudio ? "System audio on (Teams, FaceTime)" : "System audio off")
+                            }
                         } else if viewModel.isNewMeetingMode && viewModel.recordingSession?.playbackAudioFileURL == nil {
                             HStack(spacing: 8) {
                                 Button(action: { viewModel.startRecording() }) {
@@ -101,7 +163,7 @@ struct ContentView: View {
                         } else if viewModel.recordingSession?.playbackAudioFileURL != nil {
                             Button(action: {
                                 if viewModel.isPlaying {
-                                    viewModel.pauseRecording()
+                                    viewModel.pausePlayback()
                                 } else {
                                     viewModel.playRecording()
                                 }

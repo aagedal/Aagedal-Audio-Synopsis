@@ -51,6 +51,10 @@ class MeetingViewModel: ObservableObject {
         recordingManager.isRecording
     }
 
+    var isPaused: Bool {
+        recordingManager.isPaused
+    }
+
     var isStartingRecording: Bool {
         recordingManager.recordingState == .starting
     }
@@ -161,14 +165,14 @@ class MeetingViewModel: ObservableObject {
     func stopRecording() {
         Logger.info("User stopped recording", category: Logger.ui)
 
+        // Capture duration before stopping (stopRecording resets accumulatedTime)
+        let duration = recordingManager.recordingTime
+
         guard let audioURL = recordingManager.stopRecording() else {
             Logger.error("Failed to get audio file URL after stopping recording", category: Logger.ui)
             errorMessage = "Failed to save recording"
             return
         }
-
-        // Calculate duration
-        let duration = recordingManager.recordingTime
         totalDuration = AudioUtils.formatDuration(duration)
 
         // Create session with filename-based storage
@@ -230,14 +234,25 @@ class MeetingViewModel: ObservableObject {
         playbackManager.play()
     }
 
-    func pauseRecording() {
+    func pausePlayback() {
         Logger.info("User paused playback", category: Logger.ui)
         playbackManager.pause()
+    }
+
+    func pauseRecording() {
+        Logger.info("User paused recording", category: Logger.ui)
+        recordingManager.pauseRecording()
+    }
+
+    func continueRecording() {
+        Logger.info("User continuing recording", category: Logger.ui)
+        recordingManager.resumeRecording()
     }
 
     // MARK: - Meeting Navigation
 
     func prepareNewMeeting() {
+        guard !isRecording && !isPaused else { return }
         Logger.info("Preparing new meeting", category: Logger.ui)
         playbackManager.unload()
         recordingSession = nil
@@ -251,6 +266,7 @@ class MeetingViewModel: ObservableObject {
     }
 
     func loadMeeting(_ meeting: RecordingSession) {
+        guard !isRecording && !isPaused else { return }
         guard recordingSession?.id != meeting.id else { return }
         Logger.info("Loading meeting: \(meeting.title)", category: Logger.ui)
         playbackManager.unload()
