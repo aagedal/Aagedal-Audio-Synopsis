@@ -16,6 +16,17 @@ struct SidebarView: View {
     @State private var editingMeetingId: UUID?
     @State private var editingTitle: String = ""
     @State private var meetingToDelete: RecordingSession?
+    @State private var searchText: String = ""
+
+    private var filteredMeetings: [RecordingSession] {
+        guard !searchText.isEmpty else { return meetingStore.meetings }
+        let query = searchText.lowercased()
+        return meetingStore.meetings.filter { meeting in
+            meeting.title.lowercased().contains(query) ||
+            meeting.transcription.lowercased().contains(query) ||
+            meeting.notes.lowercased().contains(query)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -51,23 +62,55 @@ struct SidebarView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(selection: $meetingStore.selectedMeetingId) {
-                    ForEach(meetingStore.meetings, id: \.id) { meeting in
-                        meetingRow(meeting)
-                            .tag(meeting.id)
-                            .contextMenu {
-                                Button("Rename") {
-                                    editingMeetingId = meeting.id
-                                    editingTitle = meeting.title
-                                }
-                                Divider()
-                                Button("Delete", role: .destructive) {
-                                    meetingToDelete = meeting
-                                }
-                            }
+                // Search field
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                    TextField("Search meetings", text: $searchText)
+                        .textFieldStyle(.plain)
+                    if !searchText.isEmpty {
+                        Button(action: { searchText = "" }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
-                .listStyle(.sidebar)
+                .padding(8)
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(8)
+                .padding(.horizontal)
+                .padding(.bottom, 4)
+
+                if filteredMeetings.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.title2)
+                            .foregroundColor(.secondary.opacity(0.5))
+                        Text("No matching meetings")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(selection: $meetingStore.selectedMeetingId) {
+                        ForEach(filteredMeetings, id: \.id) { meeting in
+                            meetingRow(meeting)
+                                .tag(meeting.id)
+                                .contextMenu {
+                                    Button("Rename") {
+                                        editingMeetingId = meeting.id
+                                        editingTitle = meeting.title
+                                    }
+                                    Divider()
+                                    Button("Delete", role: .destructive) {
+                                        meetingToDelete = meeting
+                                    }
+                                }
+                        }
+                    }
+                    .listStyle(.sidebar)
+                }
             }
         }
         .sheet(item: $editingMeetingId) { meetingId in
