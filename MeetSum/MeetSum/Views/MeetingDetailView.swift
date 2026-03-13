@@ -413,6 +413,13 @@ struct MeetingDetailView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
             }
+
+            Button(action: { viewModel.errorMessage = nil }) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
         }
         .padding()
         .background(Color.orange.opacity(0.1))

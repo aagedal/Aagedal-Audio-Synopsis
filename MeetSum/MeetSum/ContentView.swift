@@ -134,9 +134,8 @@ struct ContentView: View {
                                     captureSystemAudio.toggle()
                                     ModelSettings.captureSystemAudio = captureSystemAudio
                                 }) {
-                                    Image(systemName: captureSystemAudio ? "macbook" : "macbook")
+                                    Image(systemName: captureSystemAudio ? "speaker.wave.2.fill" : "speaker.slash")
                                         .foregroundColor(captureSystemAudio ? .blue : .secondary)
-                                        .opacity(captureSystemAudio ? 1.0 : 0.4)
                                 }
                                 .buttonStyle(.plain)
                                 .help(captureSystemAudio ? "System audio on (Teams, FaceTime)" : "System audio off")
@@ -165,9 +164,8 @@ struct ContentView: View {
                                     captureSystemAudio.toggle()
                                     ModelSettings.captureSystemAudio = captureSystemAudio
                                 }) {
-                                    Image(systemName: captureSystemAudio ? "macbook" : "macbook")
+                                    Image(systemName: captureSystemAudio ? "speaker.wave.2.fill" : "speaker.slash")
                                         .foregroundColor(captureSystemAudio ? .blue : .secondary)
-                                        .opacity(captureSystemAudio ? 1.0 : 0.4)
                                 }
                                 .buttonStyle(.plain)
                                 .help(captureSystemAudio ? "System audio on (Teams, FaceTime)" : "System audio off")

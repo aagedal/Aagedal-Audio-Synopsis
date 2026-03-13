@@ -132,6 +132,7 @@ extension AudioPlaybackManager: AVAudioPlayerDelegate {
         Task { @MainActor in
             Logger.info("Audio playback finished", category: Logger.audio)
             isPlaying = false
+            stopTimeUpdateTimer()
             currentTime = 0
         }
     }

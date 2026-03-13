@@ -298,6 +298,12 @@ class MeetingViewModel: ObservableObject {
     func loadMeeting(_ meeting: RecordingSession) {
         guard !isRecording && !isPaused else { return }
         guard recordingSession?.id != meeting.id else { return }
+
+        // Flush any pending notes before switching away
+        if recordingSession != nil && !isNewMeetingMode {
+            saveNotes()
+        }
+
         Logger.info("Loading meeting: \(meeting.title)", category: Logger.ui)
         playbackManager.unload()
 

@@ -15,6 +15,7 @@ struct SidebarView: View {
 
     @State private var editingMeetingId: UUID?
     @State private var editingTitle: String = ""
+    @State private var meetingToDelete: RecordingSession?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -61,7 +62,7 @@ struct SidebarView: View {
                                 }
                                 Divider()
                                 Button("Delete", role: .destructive) {
-                                    meetingStore.deleteMeeting(meeting)
+                                    meetingToDelete = meeting
                                 }
                             }
                     }
@@ -71,6 +72,20 @@ struct SidebarView: View {
         }
         .sheet(item: $editingMeetingId) { meetingId in
             renameSheet(meetingId: meetingId)
+        }
+        .alert("Delete Meeting?", isPresented: Binding(
+            get: { meetingToDelete != nil },
+            set: { if !$0 { meetingToDelete = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { meetingToDelete = nil }
+            Button("Delete", role: .destructive) {
+                if let meeting = meetingToDelete {
+                    meetingStore.deleteMeeting(meeting)
+                    meetingToDelete = nil
+                }
+            }
+        } message: {
+            Text("This will permanently delete the meeting and its audio files.")
         }
     }
 
@@ -138,11 +153,15 @@ struct SidebarView: View {
         .frame(width: 300)
     }
 
-    private func formattedDate(_ date: Date) -> String {
+    private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .short
         formatter.timeStyle = .short
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    private func formattedDate(_ date: Date) -> String {
+        Self.dateFormatter.string(from: date)
     }
 }
 

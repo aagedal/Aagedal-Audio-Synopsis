@@ -60,6 +60,10 @@ class AudioRecordingManager: NSObject, ObservableObject {
     // High-quality playback recording
     private var playbackFile: AVAudioFile?
 
+    // Cached audio converter (expensive to create — reuse across callbacks)
+    private var cachedConverter: AVAudioConverter?
+    private var cachedConverterSourceFormat: AVAudioFormat?
+
     // Segment rotation
     private let segmentDuration: TimeInterval = 10.0
     private var segmentStartTime: Date?
@@ -261,6 +265,8 @@ class AudioRecordingManager: NSObject, ObservableObject {
         // Finalize current segment but keep recording file open
         segmentQueue.sync {
             self.finalizeCurrentSegment(publish: true)
+            self.cachedConverter = nil
+            self.cachedConverterSourceFormat = nil
         }
 
         // Update WAV header for crash safety (but don't close the handle)
@@ -406,6 +412,8 @@ class AudioRecordingManager: NSObject, ObservableObject {
             self.finalizeCurrentSegment(publish: true)
             self.finalizeRecordingFile()
             self.playbackFile = nil
+            self.cachedConverter = nil
+            self.cachedConverterSourceFormat = nil
         }
 
         // Reset pause/resume state
@@ -427,7 +435,12 @@ class AudioRecordingManager: NSObject, ObservableObject {
 
     /// Process an audio buffer: convert to 16kHz PCM and write to segment + full recording
     private func processAudioBuffer(_ buffer: AVAudioPCMBuffer, from sourceFormat: AVAudioFormat, to targetFormat: AVAudioFormat) {
-        guard let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) else { return }
+        // Reuse converter if source format hasn't changed
+        if cachedConverter == nil || cachedConverterSourceFormat != sourceFormat {
+            cachedConverter = AVAudioConverter(from: sourceFormat, to: targetFormat)
+            cachedConverterSourceFormat = sourceFormat
+        }
+        guard let converter = cachedConverter else { return }
 
         let ratio = targetFormat.sampleRate / sourceFormat.sampleRate
         let outputFrameCount = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
