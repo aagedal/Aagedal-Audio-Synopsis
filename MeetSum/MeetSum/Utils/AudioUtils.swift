@@ -36,20 +36,30 @@ struct AudioUtils {
     ]
 
     /// Whisper-native recording format: 16kHz, mono, 16-bit PCM
-    static let whisperRecordingFormat = AVAudioFormat(
-        commonFormat: .pcmFormatInt16,
-        sampleRate: 16000,
-        channels: 1,
-        interleaved: true
-    )!
+    static let whisperRecordingFormat: AVAudioFormat = {
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: 16000,
+            channels: 1,
+            interleaved: true
+        ) else {
+            fatalError("Failed to create 16kHz Int16 audio format")
+        }
+        return format
+    }()
 
     /// Intermediate Float32 format for audio mixing: 16kHz, mono
-    static let whisperFloat32Format = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32,
-        sampleRate: 16000,
-        channels: 1,
-        interleaved: false
-    )!
+    static let whisperFloat32Format: AVAudioFormat = {
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 16000,
+            channels: 1,
+            interleaved: false
+        ) else {
+            fatalError("Failed to create 16kHz Float32 audio format")
+        }
+        return format
+    }()
 
     /// File extension for recordings
     static let recordingFileExtension = "wav"

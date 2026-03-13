@@ -154,10 +154,7 @@ class AudioRecordingManager: NSObject, ObservableObject {
                 // Setup microphone via AVAudioEngine (if enabled)
                 var engine: AVAudioEngine?
                 if useMic {
-                    let eng = AVAudioEngine()
-                    let inputNode = eng.inputNode
-                    let inputFormat = inputNode.outputFormat(forBus: 0)
-                    let targetFormat = AudioUtils.whisperRecordingFormat
+                    let (eng, inputFormat) = await MainActor.run { self.setupMicrophoneEngine() }
 
                     // Create high-quality AAC playback file from mic
                     let playbackFilename = AudioUtils.generatePlaybackFilename()
@@ -178,47 +175,16 @@ class AudioRecordingManager: NSObject, ObservableObject {
                         self.playbackFile = playbackAudioFile
                     }
 
-                    inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
-                        guard let self = self else { return }
-                        self.segmentQueue.async {
-                            try? self.playbackFile?.write(from: buffer)
-                            if self.mixingBuffer != nil {
-                                self.processAudioBufferMixed(buffer, from: inputFormat)
-                            } else {
-                                self.processAudioBuffer(buffer, from: inputFormat, to: targetFormat)
-                            }
-                        }
-                    }
-
                     engine = eng
                 }
 
                 // Start system audio capture (if enabled)
                 if useSystemAudio {
-                    let buffer = AudioMixingBuffer(capacity: 32000) // 2 seconds at 16kHz
-                    let capture = SystemAudioCapture(mixingBuffer: buffer)
-                    do {
-                        try await capture.startCapture()
-                        await MainActor.run {
-                            self.mixingBuffer = buffer
-                            self.systemAudioCapture = capture
-                        }
-                    } catch {
-                        Logger.warning("System audio capture failed: \(error.localizedDescription)", category: Logger.audio)
-                        // Continue without system audio — don't fail the recording
-                    }
+                    await self.startSystemAudioCapture()
                 }
 
                 // Start the engine (mic modes) or drain timer (system-only mode)
-                if let engine = engine {
-                    try engine.start()
-                } else {
-                    let hasSystemAudio = await MainActor.run { self.systemAudioCapture != nil }
-                    if hasSystemAudio {
-                        // System-audio-only: use a timer to drain the ring buffer
-                        await MainActor.run { self.startDrainTimer() }
-                    }
-                }
+                try await self.startEngineOrDrainTimer(engine)
 
                 await MainActor.run {
                     self.audioEngine = engine
@@ -304,50 +270,17 @@ class AudioRecordingManager: NSObject, ObservableObject {
                 // Setup microphone via AVAudioEngine (if enabled)
                 var engine: AVAudioEngine?
                 if useMic {
-                    let eng = AVAudioEngine()
-                    let inputNode = eng.inputNode
-                    let inputFormat = inputNode.outputFormat(forBus: 0)
-                    let targetFormat = AudioUtils.whisperRecordingFormat
-
-                    inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
-                        guard let self = self else { return }
-                        self.segmentQueue.async {
-                            try? self.playbackFile?.write(from: buffer)
-                            if self.mixingBuffer != nil {
-                                self.processAudioBufferMixed(buffer, from: inputFormat)
-                            } else {
-                                self.processAudioBuffer(buffer, from: inputFormat, to: targetFormat)
-                            }
-                        }
-                    }
-
+                    let (eng, _) = await MainActor.run { self.setupMicrophoneEngine() }
                     engine = eng
                 }
 
                 // Start system audio capture (if enabled)
                 if useSystemAudio {
-                    let buffer = AudioMixingBuffer(capacity: 32000)
-                    let capture = SystemAudioCapture(mixingBuffer: buffer)
-                    do {
-                        try await capture.startCapture()
-                        await MainActor.run {
-                            self.mixingBuffer = buffer
-                            self.systemAudioCapture = capture
-                        }
-                    } catch {
-                        Logger.warning("System audio capture failed on resume: \(error.localizedDescription)", category: Logger.audio)
-                    }
+                    await self.startSystemAudioCapture()
                 }
 
                 // Start the engine or drain timer
-                if let engine = engine {
-                    try engine.start()
-                } else {
-                    let hasSystemAudio = await MainActor.run { self.systemAudioCapture != nil }
-                    if hasSystemAudio {
-                        await MainActor.run { self.startDrainTimer() }
-                    }
-                }
+                try await self.startEngineOrDrainTimer(engine)
 
                 // Open new segment file (continuing from current index)
                 await MainActor.run {
@@ -437,6 +370,58 @@ class AudioRecordingManager: NSObject, ObservableObject {
         }
 
         return fileURL
+    }
+
+    // MARK: - Recording Setup Helpers
+
+    /// Create an AVAudioEngine with a mic tap that writes to playback file and processes audio segments.
+    /// Returns the engine and the mic input format.
+    private func setupMicrophoneEngine() -> (AVAudioEngine, AVAudioFormat) {
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
+        let inputFormat = inputNode.outputFormat(forBus: 0)
+        let targetFormat = AudioUtils.whisperRecordingFormat
+
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
+            guard let self = self else { return }
+            self.segmentQueue.async {
+                try? self.playbackFile?.write(from: buffer)
+                if self.mixingBuffer != nil {
+                    self.processAudioBufferMixed(buffer, from: inputFormat)
+                } else {
+                    self.processAudioBuffer(buffer, from: inputFormat, to: targetFormat)
+                }
+            }
+        }
+
+        return (engine, inputFormat)
+    }
+
+    /// Start system audio capture if enabled. Logs a warning and continues if capture fails.
+    private func startSystemAudioCapture() async {
+        let buffer = AudioMixingBuffer(capacity: 32000) // 2 seconds at 16kHz
+        let capture = SystemAudioCapture(mixingBuffer: buffer)
+        do {
+            try await capture.startCapture()
+            await MainActor.run {
+                self.mixingBuffer = buffer
+                self.systemAudioCapture = capture
+            }
+        } catch {
+            Logger.warning("System audio capture failed: \(error.localizedDescription)", category: Logger.audio)
+        }
+    }
+
+    /// Start the audio engine (mic mode) or drain timer (system-audio-only mode).
+    private func startEngineOrDrainTimer(_ engine: AVAudioEngine?) async throws {
+        if let engine = engine {
+            try engine.start()
+        } else {
+            let hasSystemAudio = await MainActor.run { self.systemAudioCapture != nil }
+            if hasSystemAudio {
+                await MainActor.run { self.startDrainTimer() }
+            }
+        }
     }
 
     // MARK: - Private Methods

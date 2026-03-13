@@ -88,15 +88,26 @@ nonisolated class SystemAudioCapture: @unchecked Sendable {
     private var stream: SCStream?
     private var streamOutput: AudioStreamOutput?
     private var audioConverter: AVAudioConverter?
-    private(set) var isCapturing = false
+    private var _isCapturing = false
+    private let lock = NSLock()
+
+    private(set) var isCapturing: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _isCapturing }
+        set { lock.lock(); defer { lock.unlock() }; _isCapturing = newValue }
+    }
 
     private let mixingBuffer: AudioMixingBuffer
-    private let targetFormat = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32,
-        sampleRate: 16000,
-        channels: 1,
-        interleaved: false
-    )!
+    private let targetFormat: AVAudioFormat = {
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 16000,
+            channels: 1,
+            interleaved: false
+        ) else {
+            fatalError("Failed to create 16kHz Float32 audio format")
+        }
+        return format
+    }()
 
     init(mixingBuffer: AudioMixingBuffer) {
         self.mixingBuffer = mixingBuffer
@@ -148,7 +159,9 @@ nonisolated class SystemAudioCapture: @unchecked Sendable {
         try? await stream.stopCapture()
         self.stream = nil
         self.streamOutput = nil
+        lock.lock()
         self.audioConverter = nil
+        lock.unlock()
         self.isCapturing = false
 
         Logger.info("System audio capture stopped", category: Logger.audio)
@@ -161,11 +174,13 @@ nonisolated class SystemAudioCapture: @unchecked Sendable {
         guard let pcmBuffer = Self.pcmBuffer(from: sampleBuffer) else { return }
         let sourceFormat = pcmBuffer.format
 
-        // Create or recreate converter if source format changed
+        // Create or recreate converter if source format changed (thread-safe)
+        lock.lock()
         if audioConverter == nil || audioConverter!.inputFormat != sourceFormat {
             audioConverter = AVAudioConverter(from: sourceFormat, to: targetFormat)
         }
-        guard let converter = audioConverter else { return }
+        guard let converter = audioConverter else { lock.unlock(); return }
+        lock.unlock()
 
         // Convert to 16kHz mono Float32
         let ratio = targetFormat.sampleRate / sourceFormat.sampleRate
