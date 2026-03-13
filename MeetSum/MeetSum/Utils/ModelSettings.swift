@@ -48,6 +48,7 @@ struct ModelSettings {
         static let captureSystemAudio = "captureSystemAudio"
         static let captureMicrophone = "captureMicrophone"
         static let transcriptionLanguage = "transcriptionLanguage"
+        static let insertTimecodeInNotes = "insertTimecodeInNotes"
     }
 
     // MARK: - Defaults
@@ -168,6 +169,21 @@ struct ModelSettings {
         set {
             defaults.set(newValue, forKey: Keys.captureSystemAudio)
             Logger.info("Capture system audio: \(newValue)", category: Logger.general)
+        }
+    }
+
+    // MARK: - Notes
+
+    /// Whether to auto-insert timecodes when pressing Enter in notes during recording
+    static var insertTimecodeInNotes: Bool {
+        get {
+            if defaults.object(forKey: Keys.insertTimecodeInNotes) == nil {
+                return true
+            }
+            return defaults.bool(forKey: Keys.insertTimecodeInNotes)
+        }
+        set {
+            defaults.set(newValue, forKey: Keys.insertTimecodeInNotes)
         }
     }
 
@@ -314,6 +330,7 @@ struct ModelSettings {
         defaults.removeObject(forKey: Keys.captureSystemAudio)
         defaults.removeObject(forKey: Keys.captureMicrophone)
         defaults.removeObject(forKey: Keys.transcriptionLanguage)
+        defaults.removeObject(forKey: Keys.insertTimecodeInNotes)
         Logger.info("Model settings reset", category: Logger.general)
     }
 }

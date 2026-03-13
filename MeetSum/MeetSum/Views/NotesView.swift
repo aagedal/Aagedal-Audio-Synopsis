@@ -15,6 +15,7 @@ struct NotesView: View {
     var onTextChange: (() -> Void)?
 
     @State private var markdownEnabled = true
+    @State private var insertTimecodes: Bool = ModelSettings.insertTimecodeInNotes
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -24,6 +25,19 @@ struct NotesView: View {
                     .font(.headline)
 
                 Spacer()
+
+                if isRecording {
+                    Button(action: {
+                        insertTimecodes.toggle()
+                        ModelSettings.insertTimecodeInNotes = insertTimecodes
+                    }) {
+                        Image(systemName: insertTimecodes ? "clock.badge.checkmark" : "clock.badge.xmark")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help(insertTimecodes ? "Timecodes on: timestamps inserted on Enter" : "Timecodes off: plain newlines on Enter")
+                }
 
                 Button(action: { markdownEnabled.toggle() }) {
                     Image(systemName: markdownEnabled ? "textformat" : "textformat.alt")
@@ -165,7 +179,7 @@ struct TimestampedTextView: NSViewRepresentable {
 
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-                if parent.isRecording {
+                if parent.isRecording && ModelSettings.insertTimecodeInNotes {
                     let timestamp = parent.currentTimestamp()
                     let insertion = "\n[\(timestamp)] "
                     textView.insertText(insertion, replacementRange: textView.selectedRange())
