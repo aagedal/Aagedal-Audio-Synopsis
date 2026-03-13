@@ -135,7 +135,10 @@ class SummarizationManager: ObservableObject {
 
         progress = "Generating summary..."
 
-        let systemPrompt = ModelSettings.summarizationSystemPrompt
+        var systemPrompt = ModelSettings.summarizationSystemPrompt
+        if ModelSettings.disableModelThinking {
+            systemPrompt += " /no_think"
+        }
         let userContent = Self.buildUserPrompt(transcription: transcription, notes: notes)
         let userInput = UserInput(
             messages: [
@@ -144,7 +147,7 @@ class SummarizationManager: ObservableObject {
             ]
         )
 
-        let maxTokens = 500
+        let maxTokens = 2000
 
         do {
             let result = try await container.perform { context in

@@ -21,6 +21,8 @@ struct SettingsView: View {
     @State private var selectedEngine: SummarizationEngine = ModelSettings.summarizationEngine
     @State private var customPrompt: String = ModelSettings.summarizationSystemPrompt
     @StateObject private var mlxLoader = MLXModelLoader()
+    @State private var selectedWhisperModel: String = ModelSettings.selectedWhisperModel
+    @State private var disableThinking: Bool = ModelSettings.disableModelThinking
 
     var body: some View {
         TabView {
@@ -66,6 +68,8 @@ struct SettingsView: View {
                     if selectedEngine == .mlx {
                         Divider()
                         mlxModelSection
+                        Divider()
+                        thinkingSection
                     }
 
                     Divider()
@@ -207,6 +211,13 @@ struct SettingsView: View {
                 .font(.headline)
                 .foregroundColor(.green)
 
+            if let activeName = (installedWhisperModels + modelManager.customModels)
+                .first(where: { $0.id == selectedWhisperModel })?.name {
+                Text("Active: \(activeName)")
+                    .font(.subheadline)
+                    .foregroundColor(.blue)
+            }
+
             if installedWhisperModels.isEmpty && modelManager.customModels.isEmpty {
                 Text("No Whisper models installed")
                     .font(.subheadline)
@@ -222,14 +233,27 @@ struct SettingsView: View {
     }
 
     private func installedModelRow(_ model: ModelMetadata) -> some View {
-        HStack {
-            Image(systemName: "waveform")
-                .foregroundColor(.blue)
+        let isActive = selectedWhisperModel == model.id
+
+        return HStack {
+            Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
+                .foregroundColor(isActive ? .green : .secondary)
                 .frame(width: 30)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(model.name)
-                    .font(.subheadline.weight(.medium))
+                HStack(spacing: 6) {
+                    Text(model.name)
+                        .font(.subheadline.weight(.medium))
+                    if isActive {
+                        Text("Active")
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.green.opacity(0.15))
+                            .foregroundColor(.green)
+                            .cornerRadius(4)
+                    }
+                }
                 Text(model.description)
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -241,6 +265,15 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
 
+            if !isActive {
+                Button("Use") {
+                    selectedWhisperModel = model.id
+                    ModelSettings.selectedWhisperModel = model.id
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
             Button(action: {
                 deleteModel(model)
             }) {
@@ -250,7 +283,7 @@ struct SettingsView: View {
             .buttonStyle(.plain)
         }
         .padding()
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(isActive ? Color.blue.opacity(0.05) : Color(NSColor.controlBackgroundColor))
         .cornerRadius(8)
     }
 
@@ -272,14 +305,27 @@ struct SettingsView: View {
     }
 
     private func customModelRow(_ model: ModelMetadata) -> some View {
-        HStack {
-            Image(systemName: "waveform")
-                .foregroundColor(.orange)
+        let isActive = selectedWhisperModel == model.id
+
+        return HStack {
+            Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
+                .foregroundColor(isActive ? .green : .secondary)
                 .frame(width: 30)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(model.name)
-                    .font(.subheadline.weight(.medium))
+                HStack(spacing: 6) {
+                    Text(model.name)
+                        .font(.subheadline.weight(.medium))
+                    if isActive {
+                        Text("Active")
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.green.opacity(0.15))
+                            .foregroundColor(.green)
+                            .cornerRadius(4)
+                    }
+                }
                 Text(model.description)
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -291,6 +337,15 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
 
+            if !isActive {
+                Button("Use") {
+                    selectedWhisperModel = model.id
+                    ModelSettings.selectedWhisperModel = model.id
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
             Button(action: {
                 deleteModel(model)
             }) {
@@ -300,7 +355,7 @@ struct SettingsView: View {
             .buttonStyle(.plain)
         }
         .padding()
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(isActive ? Color.blue.opacity(0.05) : Color(NSColor.controlBackgroundColor))
         .cornerRadius(8)
     }
 
@@ -618,6 +673,28 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Thinking Section
+
+    private var thinkingSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Model Thinking", systemImage: "brain.head.profile")
+                .font(.headline)
+
+            Toggle(isOn: $disableThinking) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Disable thinking")
+                        .font(.subheadline)
+                    Text("Prevents models like Qwen3 from using internal reasoning tokens, which speeds up generation and avoids wasting the token budget on hidden reasoning. Disable this if you want to see the model's thought process.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .onChange(of: disableThinking) { _, newValue in
+                ModelSettings.disableModelThinking = newValue
+            }
+        }
+    }
+
     // MARK: - Summarization Prompt Section
 
     private var summarizationPromptSection: some View {
@@ -744,8 +821,20 @@ struct SettingsView: View {
     private func deleteModel(_ model: ModelMetadata) {
         Logger.info("User deleting model: \(model.name)", category: Logger.ui)
 
+        let wasActive = selectedWhisperModel == model.id
+
         do {
             try modelManager.deleteModel(model)
+
+            // If the deleted model was active, fall back to the first installed model
+            if wasActive {
+                let remaining = (modelManager.availableModels.filter { modelManager.isModelInstalled($0.id) && $0.type == .whisper }
+                    + modelManager.customModels)
+                if let fallback = remaining.first(where: { $0.id != model.id }) {
+                    selectedWhisperModel = fallback.id
+                    ModelSettings.selectedWhisperModel = fallback.id
+                }
+            }
         } catch {
             Logger.error("Failed to delete model", error: error, category: Logger.ui)
         }

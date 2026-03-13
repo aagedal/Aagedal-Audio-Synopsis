@@ -44,6 +44,7 @@ struct ModelSettings {
         static let summarizationEngine = "summarizationEngine"
         static let hasCompletedInitialSetup = "hasCompletedInitialSetup"
         static let summarizationSystemPrompt = "summarizationSystemPrompt"
+        static let disableModelThinking = "disableModelThinking"
         static let captureSystemAudio = "captureSystemAudio"
         static let captureMicrophone = "captureMicrophone"
     }
@@ -123,6 +124,22 @@ struct ModelSettings {
         }
     }
 
+    // MARK: - Model Thinking
+
+    /// When enabled, appends /no_think to the system prompt to suppress thinking tokens (Qwen3)
+    static var disableModelThinking: Bool {
+        get {
+            if defaults.object(forKey: Keys.disableModelThinking) == nil {
+                return true
+            }
+            return defaults.bool(forKey: Keys.disableModelThinking)
+        }
+        set {
+            defaults.set(newValue, forKey: Keys.disableModelThinking)
+            Logger.info("Disable model thinking: \(newValue)", category: Logger.general)
+        }
+    }
+
     // MARK: - Audio Capture
 
     /// Whether to capture microphone audio
@@ -175,6 +192,7 @@ struct ModelSettings {
         defaults.removeObject(forKey: Keys.summarizationEngine)
         defaults.removeObject(forKey: Keys.hasCompletedInitialSetup)
         defaults.removeObject(forKey: Keys.summarizationSystemPrompt)
+        defaults.removeObject(forKey: Keys.disableModelThinking)
         defaults.removeObject(forKey: Keys.captureSystemAudio)
         defaults.removeObject(forKey: Keys.captureMicrophone)
         Logger.info("Model settings reset", category: Logger.general)

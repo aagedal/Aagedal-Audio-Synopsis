@@ -68,7 +68,7 @@ class TranscriptionManager: ObservableObject {
             return nil
         }
 
-        guard let binaryPath = Bundle.main.path(forResource: "whisper-cli", ofType: nil, inDirectory: "bin") else {
+        guard let binaryPath = Bundle.main.path(forResource: "whisper-cli", ofType: nil) else {
             Logger.error("Whisper binary not found in app bundle", category: Logger.transcription)
             await MainActor.run {
                 error = NSError(domain: "TranscriptionManager", code: 2, userInfo: [NSLocalizedDescriptionKey: "Whisper binary not found in app bundle"])
@@ -81,60 +81,62 @@ class TranscriptionManager: ObservableObject {
 
         Logger.info("Transcribing with model: \(modelPath.lastPathComponent)", category: Logger.transcription)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: binaryPath)
-        process.arguments = ["-m", modelPath.path, "-f", audioURL.path, "-otxt", "-of", outputPath.replacingOccurrences(of: ".txt", with: "")]
+        // Run the blocking Whisper process off the main thread
+        let result: Result<String, Error> = await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: binaryPath)
+            process.arguments = ["-m", modelPath.path, "-f", audioURL.path, "-otxt", "-of", outputPath.replacingOccurrences(of: ".txt", with: "")]
 
-        let stderrPipe = Pipe()
-        let stdoutPipe = Pipe()
-        process.standardError = stderrPipe
-        process.standardOutput = stdoutPipe
+            let stderrPipe = Pipe()
+            let stdoutPipe = Pipe()
+            process.standardError = stderrPipe
+            process.standardOutput = stdoutPipe
 
-        do {
-            try process.run()
-            process.waitUntilExit()
+            do {
+                try process.run()
+                process.waitUntilExit()
 
-            let exitCode = process.terminationStatus
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderrOutput = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let exitCode = process.terminationStatus
+                let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                let stderrOutput = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-            Logger.info("Whisper process completed with exit code: \(exitCode)", category: Logger.transcription)
-            if !stderrOutput.isEmpty {
-                Logger.error("Whisper stderr: \(stderrOutput)", category: Logger.transcription)
-            }
-
-            guard exitCode == 0 else {
-                let errorDetail = stderrOutput.isEmpty ? "Exit code \(exitCode)" : stderrOutput
-                Logger.error("Whisper failed: \(errorDetail)", category: Logger.transcription)
-                await MainActor.run {
-                    error = NSError(domain: "TranscriptionManager", code: 3, userInfo: [NSLocalizedDescriptionKey: "Whisper transcription failed: \(errorDetail)"])
+                Logger.info("Whisper process completed with exit code: \(exitCode)", category: Logger.transcription)
+                if !stderrOutput.isEmpty {
+                    Logger.error("Whisper stderr: \(stderrOutput)", category: Logger.transcription)
                 }
-                return nil
-            }
 
-            if FileManager.default.fileExists(atPath: outputPath) {
-                let transcriptionText = try String(contentsOfFile: outputPath, encoding: .utf8)
-                let trimmed = transcriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
-
-                Logger.info("Transcription completed. Length: \(trimmed.count) characters", category: Logger.transcription)
-
-                // Clean up output file
-                try? FileManager.default.removeItem(atPath: outputPath)
-
-                return trimmed
-            } else {
-                Logger.error("Transcription output file not found at: \(outputPath)", category: Logger.transcription)
-                await MainActor.run {
-                    error = NSError(domain: "TranscriptionManager", code: 3, userInfo: [NSLocalizedDescriptionKey: "Transcription output file not found. Whisper may have failed silently."])
+                guard exitCode == 0 else {
+                    let errorDetail = stderrOutput.isEmpty ? "Exit code \(exitCode)" : stderrOutput
+                    Logger.error("Whisper failed: \(errorDetail)", category: Logger.transcription)
+                    return .failure(NSError(domain: "TranscriptionManager", code: 3, userInfo: [NSLocalizedDescriptionKey: "Whisper transcription failed: \(errorDetail)"]))
                 }
-                return nil
-            }
 
-        } catch {
-            Logger.error("Failed to run Whisper process", error: error, category: Logger.transcription)
-            await MainActor.run {
-                self.error = error
+                if FileManager.default.fileExists(atPath: outputPath) {
+                    let transcriptionText = try String(contentsOfFile: outputPath, encoding: .utf8)
+                    let trimmed = transcriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    Logger.info("Transcription completed. Length: \(trimmed.count) characters", category: Logger.transcription)
+
+                    // Clean up output file
+                    try? FileManager.default.removeItem(atPath: outputPath)
+
+                    return .success(trimmed)
+                } else {
+                    Logger.error("Transcription output file not found at: \(outputPath)", category: Logger.transcription)
+                    return .failure(NSError(domain: "TranscriptionManager", code: 3, userInfo: [NSLocalizedDescriptionKey: "Transcription output file not found. Whisper may have failed silently."]))
+                }
+
+            } catch {
+                Logger.error("Failed to run Whisper process", error: error, category: Logger.transcription)
+                return .failure(error)
             }
+        }.value
+
+        switch result {
+        case .success(let text):
+            return text
+        case .failure(let err):
+            self.error = err
             return nil
         }
     }
