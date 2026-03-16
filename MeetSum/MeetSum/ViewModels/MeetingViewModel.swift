@@ -31,6 +31,7 @@ class MeetingViewModel: ObservableObject {
     @Published var modelLoadFraction: Double = 0
     @Published var processingMeetingIds: Set<UUID> = []
     @Published var pendingTitle: String?
+    @Published var frequencyBands: [Float] = [Float](repeating: 0, count: AudioAnalyzer.bandCount)
 
     // MARK: - Managers
 
@@ -200,6 +201,10 @@ class MeetingViewModel: ObservableObject {
 
         summarizationManager.$modelLoadFraction
             .assign(to: &$modelLoadFraction)
+
+        // Forward frequency bands for audio visualizer
+        recordingManager.$frequencyBands
+            .assign(to: &$frequencyBands)
 
         // Observe new segments for real-time transcription
         recordingManager.$newSegment

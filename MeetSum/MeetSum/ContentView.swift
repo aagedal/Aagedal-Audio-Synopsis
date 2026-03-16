@@ -150,6 +150,8 @@ struct ContentView: View {
             }
             .disabled(viewModel.isStartingRecording)
 
+            AudioVisualizerView(bands: viewModel.frequencyBands)
+
             Button(action: { showEndRecordingConfirmation = true }) {
                 HStack(spacing: 6) {
                     Image(systemName: "stop.circle.fill")

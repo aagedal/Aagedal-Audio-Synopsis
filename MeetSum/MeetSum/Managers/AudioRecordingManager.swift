@@ -38,6 +38,8 @@ class AudioRecordingManager: NSObject, ObservableObject {
     @Published var newSegment: SegmentInfo?
     /// True when system audio capture was requested but failed to start
     @Published var systemAudioFailed = false
+    /// Frequency band levels for audio visualizer (9 bands, 0.0–1.0)
+    @Published var frequencyBands: [Float] = [Float](repeating: 0, count: AudioAnalyzer.bandCount)
 
     // MARK: - Private Properties
 
@@ -87,6 +89,10 @@ class AudioRecordingManager: NSObject, ObservableObject {
     // Pause/resume support
     private var accumulatedTime: TimeInterval = 0
     private var timeOffset: TimeInterval = 0
+
+    // Frequency band smoothing
+    private var smoothedBands: [Float] = [Float](repeating: 0, count: AudioAnalyzer.bandCount)
+    private let bandDecayFactor: Float = 0.75
 
     // MARK: - Public Methods
 
@@ -258,6 +264,7 @@ class AudioRecordingManager: NSObject, ObservableObject {
         // Save accumulated time
         accumulatedTime = recordingTime
 
+        resetBands()
         recordingState = .paused
         Logger.info("Recording paused at \(AudioUtils.formatDuration(accumulatedTime))", category: Logger.audio)
     }
@@ -326,6 +333,7 @@ class AudioRecordingManager: NSObject, ObservableObject {
                 self.finalizeRecordingFile()
                 self.playbackFile = nil
             }
+            resetBands()
             recordingState = .idle
             accumulatedTime = 0
             timeOffset = 0
@@ -344,6 +352,7 @@ class AudioRecordingManager: NSObject, ObservableObject {
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine = nil
+        resetBands()
         recordingState = .idle
 
         // Finalize files and clean up mixing state on the segment queue,
@@ -396,6 +405,7 @@ class AudioRecordingManager: NSObject, ObservableObject {
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
             guard let self = self else { return }
+            let rawBands = AudioAnalyzer.frequencyBands(from: buffer)
             self.segmentQueue.async {
                 try? self.playbackFile?.write(from: buffer)
                 if self.mixingBuffer != nil {
@@ -404,6 +414,7 @@ class AudioRecordingManager: NSObject, ObservableObject {
                     self.processAudioBuffer(buffer, from: inputFormat, to: targetFormat)
                 }
             }
+            Task { @MainActor in self.applySmoothing(rawBands) }
         }
 
         return (engine, inputFormat)
@@ -679,6 +690,9 @@ class AudioRecordingManager: NSObject, ObservableObject {
         defer { samples.deallocate() }
         mixingBuffer.read(into: samples, count: available)
 
+        let rawBands = AudioAnalyzer.frequencyBands(from: samples, count: available, sampleRate: 16000)
+        Task { @MainActor in self.applySmoothing(rawBands) }
+
         // Convert Float32 to Int16 PCM
         var pcmData = Data(count: available * 2)
         pcmData.withUnsafeMutableBytes { rawBuffer in
@@ -695,6 +709,26 @@ class AudioRecordingManager: NSObject, ObservableObject {
         segmentDataSize += UInt32(pcmData.count)
 
         checkSegmentRotation(pcmData: pcmData)
+    }
+
+    // MARK: - Frequency Band Smoothing
+
+    /// Apply smoothing to frequency bands: instant attack (jump up), gradual decay.
+    private func applySmoothing(_ rawBands: [Float]) {
+        for i in 0..<smoothedBands.count {
+            let raw = i < rawBands.count ? rawBands[i] : 0
+            if raw >= smoothedBands[i] {
+                smoothedBands[i] = raw
+            } else {
+                smoothedBands[i] *= bandDecayFactor
+            }
+        }
+        frequencyBands = smoothedBands
+    }
+
+    private func resetBands() {
+        smoothedBands = [Float](repeating: 0, count: AudioAnalyzer.bandCount)
+        frequencyBands = smoothedBands
     }
 
     // MARK: - Permissions
