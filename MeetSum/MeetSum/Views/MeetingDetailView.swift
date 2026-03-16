@@ -253,8 +253,14 @@ struct MeetingDetailView: View {
                 // Summary progress banner
                 if viewModel.isSummarizing {
                     HStack(spacing: 12) {
-                        ProgressView()
-                            .controlSize(.small)
+                        if viewModel.modelLoadFraction > 0 && viewModel.modelLoadFraction < 1 {
+                            ProgressView(value: viewModel.modelLoadFraction)
+                                .progressViewStyle(.linear)
+                                .frame(width: 100)
+                        } else {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
                         Text("Generating summary...")
                             .font(.subheadline)
                             .fontWeight(.medium)
@@ -485,8 +491,14 @@ struct MeetingDetailView: View {
             } else if viewModel.isSummarizing {
                 // Summarizing
                 VStack(spacing: 16) {
-                    ProgressView()
-                        .scaleEffect(1.5)
+                    if viewModel.modelLoadFraction > 0 && viewModel.modelLoadFraction < 1 {
+                        ProgressView(value: viewModel.modelLoadFraction)
+                            .progressViewStyle(.linear)
+                            .frame(width: 200)
+                    } else {
+                        ProgressView()
+                            .scaleEffect(1.5)
+                    }
                     Text("Generating summary...")
                         .font(.headline)
                     Text(viewModel.summarizationProgress)

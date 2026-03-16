@@ -79,10 +79,14 @@ struct ModelSetupView: View {
                     if downloadingModels.isEmpty {
                         Text("Download & Continue")
                     } else {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                            .padding(.trailing, 4)
-                        Text("Downloading...")
+                        let aggregate = aggregateProgress
+                        VStack(spacing: 4) {
+                            ProgressView(value: aggregate)
+                                .progressViewStyle(.linear)
+                                .frame(width: 120)
+                            Text("Downloading \(Int(aggregate * 100))%...")
+                                .font(.caption2)
+                        }
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -116,8 +120,26 @@ struct ModelSetupView: View {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundColor(.green)
             } else if downloadingModels.contains(model.id) {
-                ProgressView()
-                    .scaleEffect(0.7)
+                if let progress = modelManager.downloadProgress[model.id] {
+                    VStack(alignment: .trailing, spacing: 4) {
+                        ProgressView(value: progress.fractionCompleted)
+                            .progressViewStyle(.linear)
+                            .frame(width: 120)
+                        HStack(spacing: 6) {
+                            Text("\(progress.downloadedFormatted) of \(progress.totalFormatted)")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            if progress.bytesPerSecond > 0 {
+                                Text(progress.speedFormatted)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                } else {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                }
             } else {
                 Text(model.sizeFormatted)
                     .font(.caption)
@@ -125,6 +147,12 @@ struct ModelSetupView: View {
             }
         }
         .padding(.vertical, 8)
+    }
+
+    private var aggregateProgress: Double {
+        let progresses = downloadingModels.compactMap { modelManager.downloadProgress[$0] }
+        guard !progresses.isEmpty else { return 0 }
+        return progresses.map(\.fractionCompleted).reduce(0, +) / Double(progresses.count)
     }
 
     private func downloadRecommendedModels() {

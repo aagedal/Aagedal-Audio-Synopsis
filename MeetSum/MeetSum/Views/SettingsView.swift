@@ -476,8 +476,9 @@ struct SettingsView: View {
                     .controlSize(.small)
                 } else if mlxLoader.isLoading {
                     VStack(spacing: 4) {
-                        ProgressView()
-                            .scaleEffect(0.8)
+                        ProgressView(value: mlxLoader.fractionCompleted)
+                            .progressViewStyle(.linear)
+                            .frame(width: 120)
                         Text(mlxLoader.status)
                             .font(.caption2)
                             .foregroundColor(.secondary)
@@ -933,12 +934,14 @@ class MLXModelLoader: ObservableObject {
     @Published var isLoaded = false
     @Published var status: String = ""
     @Published var error: String?
+    @Published var fractionCompleted: Double = 0
 
     func reset() {
         isLoading = false
         isLoaded = false
         status = ""
         error = nil
+        fractionCompleted = 0
     }
 
     func downloadAndLoad() async {
@@ -950,6 +953,7 @@ class MLXModelLoader: ObservableObject {
             let config = ModelConfiguration(id: ModelSettings.selectedMLXModel)
             let _ = try await LLMModelFactory.shared.loadContainer(configuration: config) { progress in
                 Task { @MainActor in
+                    self.fractionCompleted = progress.fractionCompleted
                     self.status = "Downloading: \(Int(progress.fractionCompleted * 100))%"
                 }
             }

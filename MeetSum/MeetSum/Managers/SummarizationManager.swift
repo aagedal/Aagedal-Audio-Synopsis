@@ -22,6 +22,7 @@ class SummarizationManager: ObservableObject {
     @Published var error: Error?
     @Published var isModelLoaded = false
     @Published var modelLoadProgress: String = ""
+    @Published var modelLoadFraction: Double = 0
 
     // MARK: - Private Properties
 
@@ -51,6 +52,7 @@ class SummarizationManager: ObservableObject {
             let config = ModelConfiguration(id: modelId)
             let container = try await LLMModelFactory.shared.loadContainer(configuration: config) { progress in
                 Task { @MainActor in
+                    self.modelLoadFraction = progress.fractionCompleted
                     self.modelLoadProgress = "Loading model: \(Int(progress.fractionCompleted * 100))%"
                 }
             }
@@ -74,6 +76,7 @@ class SummarizationManager: ObservableObject {
         loadedModelId = nil
         isModelLoaded = false
         modelLoadProgress = ""
+        modelLoadFraction = 0
     }
 
     /// Generate a summary from transcription text using the selected engine

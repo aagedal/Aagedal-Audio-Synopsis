@@ -28,6 +28,7 @@ class MeetingViewModel: ObservableObject {
     @Published var notes: String = ""
     @Published var isSummarizing = false
     @Published var summarizationProgress: String = ""
+    @Published var modelLoadFraction: Double = 0
     @Published var processingMeetingIds: Set<UUID> = []
     @Published var pendingTitle: String?
 
@@ -196,6 +197,9 @@ class MeetingViewModel: ObservableObject {
 
         summarizationManager.$progress
             .assign(to: &$summarizationProgress)
+
+        summarizationManager.$modelLoadFraction
+            .assign(to: &$modelLoadFraction)
 
         // Observe new segments for real-time transcription
         recordingManager.$newSegment
