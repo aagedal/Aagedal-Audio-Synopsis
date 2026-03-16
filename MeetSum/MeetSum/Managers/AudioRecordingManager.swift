@@ -68,9 +68,14 @@ class AudioRecordingManager: NSObject, ObservableObject {
     private var cachedMixedConverter: AVAudioConverter?
     private var cachedMixedConverterSourceFormat: AVAudioFormat?
 
-    // Segment rotation
-    private let segmentDuration: TimeInterval = 10.0
+    // Segment rotation (silence-based)
+    private let minSegmentDuration: TimeInterval = 5.0    // Don't split before 5s
+    private let maxSegmentDuration: TimeInterval = 30.0    // Force split at 30s
+    private let silenceThreshold: Float = 0.01             // Normalized RMS (~-40dB)
+    private let silenceDurationRequired: TimeInterval = 0.4 // 400ms of silence to trigger
     private var segmentStartTime: Date?
+    private var silenceStartTime: Date?   // When current silence period began
+    private var lastSpeechTime: Date?     // Last time energy was above threshold
 
     // System audio capture (for mixing with microphone)
     private var systemAudioCapture: SystemAudioCapture?
@@ -228,6 +233,8 @@ class AudioRecordingManager: NSObject, ObservableObject {
         // so in-flight tap callbacks complete before we nil out the buffer.
         segmentQueue.sync {
             self.finalizeCurrentSegment(publish: true)
+            self.silenceStartTime = nil
+            self.lastSpeechTime = nil
             self.cachedConverter = nil
             self.cachedConverterSourceFormat = nil
             self.cachedMixedConverter = nil
@@ -345,6 +352,8 @@ class AudioRecordingManager: NSObject, ObservableObject {
             self.finalizeCurrentSegment(publish: true)
             self.finalizeRecordingFile()
             self.playbackFile = nil
+            self.silenceStartTime = nil
+            self.lastSpeechTime = nil
             self.cachedConverter = nil
             self.cachedConverterSourceFormat = nil
             self.cachedMixedConverter = nil
@@ -475,11 +484,7 @@ class AudioRecordingManager: NSObject, ObservableObject {
         segmentFileHandle?.write(pcmData)
         segmentDataSize += UInt32(pcmData.count)
 
-        // Check if we need to rotate segment
-        if let start = segmentStartTime, Date().timeIntervalSince(start) >= segmentDuration {
-            finalizeCurrentSegment(publish: true)
-            openNewSegment()
-        }
+        checkSegmentRotation(pcmData: pcmData)
     }
 
     /// Process mic audio mixed with system audio: convert to Float32, mix, then write Int16 PCM
@@ -540,10 +545,44 @@ class AudioRecordingManager: NSObject, ObservableObject {
         segmentFileHandle?.write(pcmBytes)
         segmentDataSize += UInt32(pcmBytes.count)
 
-        // Check if we need to rotate segment
-        if let start = segmentStartTime, Date().timeIntervalSince(start) >= segmentDuration {
+        checkSegmentRotation(pcmData: pcmBytes)
+    }
+
+    /// Decide whether to rotate the current segment based on silence detection and duration limits.
+    /// Called from all three audio write paths (mic-only, mixed, system-only drain).
+    private func checkSegmentRotation(pcmData: Data) {
+        guard let start = segmentStartTime else { return }
+        let elapsed = Date().timeIntervalSince(start)
+        let now = Date()
+
+        let rms = AudioUtils.rmsEnergy(of: pcmData)
+
+        if rms >= silenceThreshold {
+            // Speech detected — reset silence tracking
+            silenceStartTime = nil
+            lastSpeechTime = now
+        } else {
+            // Silence detected — start tracking if not already
+            if silenceStartTime == nil {
+                silenceStartTime = now
+            }
+        }
+
+        // Force rotate at max duration (safety valve)
+        if elapsed >= maxSegmentDuration {
             finalizeCurrentSegment(publish: true)
             openNewSegment()
+            silenceStartTime = nil
+            return
+        }
+
+        // Rotate at natural silence boundary after minimum duration
+        if elapsed >= minSegmentDuration,
+           let silenceStart = silenceStartTime,
+           now.timeIntervalSince(silenceStart) >= silenceDurationRequired {
+            finalizeCurrentSegment(publish: true)
+            openNewSegment()
+            silenceStartTime = nil
         }
     }
 
@@ -655,10 +694,7 @@ class AudioRecordingManager: NSObject, ObservableObject {
         segmentFileHandle?.write(pcmData)
         segmentDataSize += UInt32(pcmData.count)
 
-        if let start = segmentStartTime, Date().timeIntervalSince(start) >= segmentDuration {
-            finalizeCurrentSegment(publish: true)
-            openNewSegment()
-        }
+        checkSegmentRotation(pcmData: pcmData)
     }
 
     // MARK: - Permissions

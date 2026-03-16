@@ -145,6 +145,26 @@ struct AudioUtils {
         return String(format: "%02d:%02d", minutes, seconds)
     }
 
+    // MARK: - Audio Analysis
+
+    /// Compute normalized RMS energy from Int16 PCM data.
+    /// Returns 0.0–1.0 where typical speech is ~0.02–0.10, silence/room noise < 0.005.
+    static func rmsEnergy(of pcmData: Data) -> Float {
+        let sampleCount = pcmData.count / 2
+        guard sampleCount > 0 else { return 0.0 }
+
+        var sumSquares: Float = 0.0
+        pcmData.withUnsafeBytes { rawBuffer in
+            let samples = rawBuffer.bindMemory(to: Int16.self)
+            for i in 0..<sampleCount {
+                let normalized = Float(samples[i]) / Float(Int16.max)
+                sumSquares += normalized * normalized
+            }
+        }
+
+        return sqrtf(sumSquares / Float(sampleCount))
+    }
+
     // MARK: - WAV File Writing
 
     /// Write a WAV header to a file handle for 16kHz mono 16-bit PCM

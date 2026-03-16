@@ -599,7 +599,8 @@ class MeetingViewModel: ObservableObject {
         let segment = segmentQueue.removeFirst()
 
         Task {
-            if let text = await transcriptionManager.transcribeSegment(audioURL: segment.url) {
+            let lastPrompt = liveTranscription.isEmpty ? nil : String(liveTranscription.suffix(200))
+            if let text = await transcriptionManager.transcribeSegment(audioURL: segment.url, prompt: lastPrompt) {
                 let transcriptSegment = TranscriptSegment(startTime: segment.startTime, text: text)
                 liveSegments.append(transcriptSegment)
 

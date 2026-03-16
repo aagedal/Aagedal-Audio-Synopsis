@@ -51,14 +51,14 @@ class TranscriptionManager: ObservableObject {
     }
 
     /// Transcribe a segment file (no UI state changes, used during recording)
-    func transcribeSegment(audioURL: URL) async -> String? {
+    func transcribeSegment(audioURL: URL, prompt: String? = nil) async -> String? {
         Logger.info("Transcribing segment: \(audioURL.lastPathComponent)", category: Logger.transcription)
-        return await runWhisper(audioURL: audioURL, outputSuffix: audioURL.deletingPathExtension().lastPathComponent)
+        return await runWhisper(audioURL: audioURL, outputSuffix: audioURL.deletingPathExtension().lastPathComponent, prompt: prompt)
     }
 
     // MARK: - Private Methods
 
-    private func runWhisper(audioURL: URL, outputSuffix: String) async -> String? {
+    private func runWhisper(audioURL: URL, outputSuffix: String, prompt: String? = nil) async -> String? {
         let selectedModelId = ModelSettings.selectedWhisperModel
         guard let modelPath = modelManager.getModelPath(for: selectedModelId) else {
             Logger.error("Whisper model not found: \(selectedModelId)", category: Logger.transcription)
@@ -89,6 +89,11 @@ class TranscriptionManager: ObservableObject {
             let language = ModelSettings.transcriptionLanguage
             if language != "auto" {
                 arguments += ["-l", language]
+            }
+            if let prompt = prompt, !prompt.isEmpty {
+                // Use last ~200 characters to keep the prompt concise
+                let trimmedPrompt = String(prompt.suffix(200))
+                arguments += ["--prompt", trimmedPrompt]
             }
             process.arguments = arguments
 
