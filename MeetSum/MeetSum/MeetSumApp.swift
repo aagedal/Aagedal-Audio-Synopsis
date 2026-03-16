@@ -7,22 +7,42 @@
 
 import SwiftUI
 
+/// FocusedValue key to expose the "new meeting" action to menu commands
+struct NewMeetingActionKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
+extension FocusedValues {
+    var newMeetingAction: (() -> Void)? {
+        get { self[NewMeetingActionKey.self] }
+        set { self[NewMeetingActionKey.self] = newValue }
+    }
+}
+
 @main
 struct MeetSumApp: App {
     @StateObject private var modelManager = ModelManager()
     @StateObject private var meetingStore = MeetingStore()
+    @FocusedValue(\.newMeetingAction) private var newMeetingAction
 
     init() {
         Logger.info("MeetSum application starting", category: Logger.general)
     }
 
     var body: some Scene {
-        WindowGroup {
+        Window("MeetSum", id: "main") {
             ContentView(modelManager: modelManager, meetingStore: meetingStore)
                 .frame(minWidth: 900, minHeight: 600)
         }
         .defaultSize(width: 1000, height: 700)
         .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("New Meeting") {
+                    newMeetingAction?()
+                }
+                .keyboardShortcut("n", modifiers: .command)
+                .disabled(newMeetingAction == nil)
+            }
             CommandGroup(replacing: .appSettings) {
                 SettingsCommand()
             }

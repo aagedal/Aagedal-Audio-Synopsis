@@ -29,6 +29,9 @@ struct ContentView: View {
 
     var body: some View {
         mainContent
+            .focusedSceneValue(\.newMeetingAction) {
+                viewModel.prepareNewMeeting()
+            }
             .onAppear { installKeyMonitor() }
             .onDisappear {
                 if let monitor = keyMonitor {
