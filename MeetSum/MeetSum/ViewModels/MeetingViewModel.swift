@@ -557,14 +557,14 @@ class MeetingViewModel: ObservableObject {
         Task {
             defer { processingMeetingIds.remove(meetingId) }
 
-            guard let text = await transcriptionManager.transcribe(audioURL: audioURL) else {
+            guard let result = await transcriptionManager.transcribeWithSegments(audioURL: audioURL) else {
                 errorMessage = "Re-transcription failed"
                 return
             }
 
             updateMeetingInStore(id: meetingId) {
-                $0.transcription = text
-                $0.segments = []
+                $0.transcription = result.text
+                $0.segments = result.segments
             }
         }
     }

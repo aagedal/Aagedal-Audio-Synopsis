@@ -50,6 +50,26 @@ class TranscriptionManager: ObservableObject {
         return result
     }
 
+    /// Transcribe a full audio file and return both text and timestamped segments
+    func transcribeWithSegments(audioURL: URL) async -> (text: String, segments: [TranscriptSegment])? {
+        Logger.info("Starting transcription with segments for: \(audioURL.lastPathComponent)", category: Logger.transcription)
+
+        await MainActor.run {
+            isTranscribing = true
+            progress = "Preparing transcription..."
+            error = nil
+        }
+
+        let result = await runWhisperWithSRT(audioURL: audioURL, outputSuffix: "transcription")
+
+        await MainActor.run {
+            isTranscribing = false
+            progress = result != nil ? "Transcription complete" : ""
+        }
+
+        return result
+    }
+
     /// Transcribe a segment file (no UI state changes, used during recording)
     func transcribeSegment(audioURL: URL, prompt: String? = nil) async -> String? {
         Logger.info("Transcribing segment: \(audioURL.lastPathComponent)", category: Logger.transcription)
@@ -57,6 +77,132 @@ class TranscriptionManager: ObservableObject {
     }
 
     // MARK: - Private Methods
+
+    private func runWhisperWithSRT(audioURL: URL, outputSuffix: String) async -> (text: String, segments: [TranscriptSegment])? {
+        let selectedModelId = ModelSettings.selectedWhisperModel
+        guard let modelPath = modelManager.getModelPath(for: selectedModelId) else {
+            Logger.error("Whisper model not found: \(selectedModelId)", category: Logger.transcription)
+            await MainActor.run {
+                error = ModelManagerError.modelNotFound(selectedModelId)
+            }
+            return nil
+        }
+
+        guard let binaryPath = Bundle.main.path(forResource: "whisper-cli", ofType: nil) else {
+            Logger.error("Whisper binary not found in app bundle", category: Logger.transcription)
+            await MainActor.run {
+                error = NSError(domain: "TranscriptionManager", code: 2, userInfo: [NSLocalizedDescriptionKey: "Whisper binary not found in app bundle"])
+            }
+            return nil
+        }
+
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let outputBase = documentsPath.appendingPathComponent(outputSuffix).path
+        let srtPath = outputBase + ".srt"
+
+        Logger.info("Transcribing with SRT output, model: \(modelPath.lastPathComponent)", category: Logger.transcription)
+
+        let result: Result<(String, [TranscriptSegment]), Error> = await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: binaryPath)
+            var arguments = ["-m", modelPath.path, "-f", audioURL.path, "-osrt", "-of", outputBase]
+            let language = ModelSettings.transcriptionLanguage
+            if language != "auto" {
+                arguments += ["-l", language]
+            }
+            process.arguments = arguments
+
+            let stderrPipe = Pipe()
+            let stdoutPipe = Pipe()
+            process.standardError = stderrPipe
+            process.standardOutput = stdoutPipe
+
+            do {
+                try process.run()
+
+                let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                let _ = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+
+                process.waitUntilExit()
+
+                let exitCode = process.terminationStatus
+                let stderrOutput = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+                Logger.info("Whisper SRT process completed with exit code: \(exitCode)", category: Logger.transcription)
+                if !stderrOutput.isEmpty {
+                    Logger.error("Whisper stderr: \(stderrOutput)", category: Logger.transcription)
+                }
+
+                guard exitCode == 0 else {
+                    let errorDetail = stderrOutput.isEmpty ? "Exit code \(exitCode)" : stderrOutput
+                    return .failure(NSError(domain: "TranscriptionManager", code: 3, userInfo: [NSLocalizedDescriptionKey: "Whisper transcription failed: \(errorDetail)"]))
+                }
+
+                guard FileManager.default.fileExists(atPath: srtPath) else {
+                    return .failure(NSError(domain: "TranscriptionManager", code: 3, userInfo: [NSLocalizedDescriptionKey: "SRT output file not found."]))
+                }
+
+                let srtContent = try String(contentsOfFile: srtPath, encoding: .utf8)
+                try? FileManager.default.removeItem(atPath: srtPath)
+
+                let segments = Self.parseSRT(srtContent)
+                let fullText = segments.map(\.text).joined(separator: "\n")
+
+                Logger.info("SRT transcription completed. \(segments.count) segments, \(fullText.count) characters", category: Logger.transcription)
+                return .success((fullText, segments))
+
+            } catch {
+                Logger.error("Failed to run Whisper process", error: error, category: Logger.transcription)
+                return .failure(error)
+            }
+        }.value
+
+        switch result {
+        case .success(let (text, segments)):
+            return (text, segments)
+        case .failure(let err):
+            self.error = err
+            return nil
+        }
+    }
+
+    /// Parse SRT subtitle content into TranscriptSegments
+    private nonisolated static func parseSRT(_ content: String) -> [TranscriptSegment] {
+        var segments: [TranscriptSegment] = []
+        // Split on double newlines to separate SRT entries
+        let blocks = content.components(separatedBy: "\n\n")
+
+        for block in blocks {
+            let lines = block.trimmingCharacters(in: .whitespacesAndNewlines)
+                .components(separatedBy: "\n")
+            // SRT block: index, timestamp line, text line(s)
+            guard lines.count >= 3 else { continue }
+
+            let timeLine = lines[1]
+            let text = lines[2...].joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+
+            // Parse "HH:MM:SS,mmm --> HH:MM:SS,mmm"
+            let parts = timeLine.components(separatedBy: " --> ")
+            guard let startStr = parts.first else { continue }
+            guard let startTime = parseSRTTimestamp(startStr) else { continue }
+
+            segments.append(TranscriptSegment(startTime: startTime, text: text))
+        }
+        return segments
+    }
+
+    /// Parse "HH:MM:SS,mmm" into seconds
+    private nonisolated static func parseSRTTimestamp(_ str: String) -> TimeInterval? {
+        // Format: "00:01:23,456"
+        let cleaned = str.replacingOccurrences(of: ",", with: ".")
+        let parts = cleaned.split(separator: ":")
+        guard parts.count == 3,
+              let hours = Double(parts[0]),
+              let minutes = Double(parts[1]),
+              let seconds = Double(parts[2]) else { return nil }
+        return hours * 3600 + minutes * 60 + seconds
+    }
 
     private func runWhisper(audioURL: URL, outputSuffix: String, prompt: String? = nil) async -> String? {
         let selectedModelId = ModelSettings.selectedWhisperModel
