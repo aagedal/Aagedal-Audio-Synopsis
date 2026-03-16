@@ -436,8 +436,9 @@ struct SettingsView: View {
     }
 
     private func mlxModelRow(_ model: ModelMetadata) -> some View {
-        let isSelected = ModelSettings.selectedMLXModel == (model.huggingFaceId ?? model.id)
-        let isCached = isMLXModelCached(model)
+        let modelId = model.huggingFaceId ?? model.id
+        let isSelected = ModelSettings.selectedMLXModel == modelId
+        let isCached = isMLXModelCached(model) || mlxLoader.downloadedModelIds.contains(modelId)
 
         return VStack(spacing: 0) {
             HStack {
@@ -465,16 +466,7 @@ struct SettingsView: View {
 
                 Spacer()
 
-                if !isSelected {
-                    Button("Select") {
-                        if let hfId = model.huggingFaceId {
-                            ModelSettings.selectedMLXModel = hfId
-                            mlxLoader.reset()
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                } else if mlxLoader.isLoading {
+                if mlxLoader.isLoading && mlxLoader.downloadingModelId == (model.huggingFaceId ?? model.id) {
                     VStack(spacing: 4) {
                         ProgressView(value: mlxLoader.fractionCompleted)
                             .progressViewStyle(.linear)
@@ -483,7 +475,25 @@ struct SettingsView: View {
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
-                } else if mlxLoader.isLoaded {
+                } else if !isCached {
+                    Button("Download") {
+                        Task {
+                            await mlxLoader.downloadAndLoad(modelId: model.huggingFaceId ?? model.id)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(mlxLoader.isLoading)
+                } else if !isSelected {
+                    Button("Select") {
+                        if let hfId = model.huggingFaceId {
+                            ModelSettings.selectedMLXModel = hfId
+                            mlxLoader.reset()
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else if isSelected && mlxLoader.isLoaded {
                     HStack(spacing: 4) {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundColor(.green)
@@ -492,9 +502,9 @@ struct SettingsView: View {
                             .foregroundColor(.green)
                     }
                 } else {
-                    Button(isCached ? "Verify" : "Download") {
+                    Button("Verify") {
                         Task {
-                            await mlxLoader.downloadAndLoad()
+                            await mlxLoader.downloadAndLoad(modelId: model.huggingFaceId ?? model.id)
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -502,8 +512,8 @@ struct SettingsView: View {
                 }
             }
 
-            // Cache management row for selected model
-            if isSelected && isCached && !mlxLoader.isLoading {
+            // Cache management row for cached models
+            if isCached && !mlxLoader.isLoading {
                 HStack {
                     Spacer()
 
@@ -935,6 +945,8 @@ class MLXModelLoader: ObservableObject {
     @Published var status: String = ""
     @Published var error: String?
     @Published var fractionCompleted: Double = 0
+    @Published var downloadingModelId: String?
+    @Published var downloadedModelIds: Set<String> = []
 
     func reset() {
         isLoading = false
@@ -942,15 +954,18 @@ class MLXModelLoader: ObservableObject {
         status = ""
         error = nil
         fractionCompleted = 0
+        downloadingModelId = nil
     }
 
-    func downloadAndLoad() async {
+    func downloadAndLoad(modelId: String) async {
         isLoading = true
+        downloadingModelId = modelId
         error = nil
+        fractionCompleted = 0
         status = "Downloading model..."
 
         do {
-            let config = ModelConfiguration(id: ModelSettings.selectedMLXModel)
+            let config = ModelConfiguration(id: modelId)
             let _ = try await LLMModelFactory.shared.loadContainer(configuration: config) { progress in
                 Task { @MainActor in
                     self.fractionCompleted = progress.fractionCompleted
@@ -958,6 +973,7 @@ class MLXModelLoader: ObservableObject {
                 }
             }
 
+            downloadedModelIds.insert(modelId)
             isLoaded = true
             isLoading = false
             status = "Model ready"
