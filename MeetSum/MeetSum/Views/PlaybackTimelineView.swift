@@ -98,6 +98,16 @@ struct PlaybackTimelineView: View {
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(.secondary)
                 .frame(width: 40, alignment: .leading)
+
+            // Speed button
+            Button(action: { viewModel.cyclePlaybackRate() }) {
+                Text(viewModel.playbackRate == 1.0 ? "1x" : "\(viewModel.playbackRate, specifier: "%g")x")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(viewModel.playbackRate == 1.0 ? .secondary : .accentColor)
+                    .frame(width: 32)
+            }
+            .buttonStyle(.plain)
+            .help("Playback speed (click to cycle)")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)

@@ -19,6 +19,9 @@ class AudioPlaybackManager: NSObject, ObservableObject {
     @Published var currentTime: TimeInterval = 0.0
     @Published var duration: TimeInterval = 0.0
     @Published var error: Error?
+    @Published var playbackRate: Float = 1.0
+
+    static let availableRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
     
     // MARK: - Private Properties
 
@@ -38,6 +41,8 @@ class AudioPlaybackManager: NSObject, ObservableObject {
         do {
             audioPlayer = try AVAudioPlayer(contentsOf: url)
             audioPlayer?.delegate = self
+            audioPlayer?.enableRate = true
+            audioPlayer?.rate = playbackRate
             audioPlayer?.prepareToPlay()
             duration = audioPlayer?.duration ?? 0.0
             Logger.info("Audio file loaded successfully. Duration: \(AudioUtils.formatDuration(duration))", category: Logger.audio)
@@ -54,7 +59,8 @@ class AudioPlaybackManager: NSObject, ObservableObject {
             return
         }
 
-        Logger.info("Starting audio playback", category: Logger.audio)
+        Logger.info("Starting audio playback at \(playbackRate)x", category: Logger.audio)
+        player.rate = playbackRate
         player.play()
         isPlaying = true
         startTimeUpdateTimer()
@@ -95,6 +101,17 @@ class AudioPlaybackManager: NSObject, ObservableObject {
         let clampedTime = max(0, min(time, player.duration))
         player.currentTime = clampedTime
         currentTime = clampedTime
+    }
+
+    /// Cycle to the next playback rate
+    func cycleRate() {
+        let rates = Self.availableRates
+        if let index = rates.firstIndex(of: playbackRate) {
+            playbackRate = rates[(index + 1) % rates.count]
+        } else {
+            playbackRate = 1.0
+        }
+        audioPlayer?.rate = playbackRate
     }
 
     /// Unload the current audio

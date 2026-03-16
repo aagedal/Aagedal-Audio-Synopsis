@@ -28,6 +28,18 @@ struct ContentView: View {
     }
 
     var body: some View {
+        mainContent
+            .onAppear { installKeyMonitor() }
+            .onDisappear {
+                if let monitor = keyMonitor {
+                    NSEvent.removeMonitor(monitor)
+                    keyMonitor = nil
+                }
+                viewModel.saveNotes()
+            }
+    }
+
+    private var mainContent: some View {
         NavigationSplitView {
             SidebarView(meetingStore: meetingStore, processingMeetingIds: viewModel.processingMeetingIds, onNewMeeting: {
                 viewModel.prepareNewMeeting()
@@ -36,21 +48,7 @@ struct ContentView: View {
             })
             .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
         } detail: {
-            VStack(spacing: 0) {
-                // Playback timeline bar
-                if !viewModel.isRecording && !viewModel.isPaused && !viewModel.isNewMeetingMode &&
-                    viewModel.recordingSession?.playbackAudioFileURL != nil {
-                    PlaybackTimelineView(viewModel: viewModel)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                    Divider()
-                }
-
-                MeetingDetailView(
-                    viewModel: viewModel,
-                    modelManager: modelManager,
-                    selectedTab: $selectedTab
-                )
-            }
+            detailContent
         }
         .frame(minWidth: 900, minHeight: 600)
         .alert("End Recording?", isPresented: $showEndRecordingConfirmation) {
@@ -66,186 +64,207 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .principal) {
-                HStack(spacing: 16) {
-                    // Record/Play/Stop button
-                    Group {
-                        if viewModel.isRecording || viewModel.isStartingRecording {
-                            // While recording: Pause + End buttons
-                            HStack(spacing: 8) {
-                                Button(action: {
-                                    if viewModel.recordingState == .recording {
-                                        viewModel.pauseRecording()
-                                    }
-                                }) {
-                                    HStack(spacing: 6) {
-                                        if viewModel.isStartingRecording {
-                                            ProgressView()
-                                                .controlSize(.small)
-                                        } else {
-                                            Image(systemName: "pause.circle.fill")
-                                                .foregroundColor(.orange)
-                                        }
-                                        Text(viewModel.isRecording ? viewModel.recordingTime : "Starting...")
-                                            .monospacedDigit()
-                                    }
-                                }
-                                .disabled(viewModel.isStartingRecording)
-
-                                Button(action: {
-                                    showEndRecordingConfirmation = true
-                                }) {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "stop.circle.fill")
-                                            .foregroundColor(.red)
-                                        Text("End")
-                                    }
-                                }
-                                .disabled(viewModel.isStartingRecording)
-                            }
-                        } else if viewModel.isPaused {
-                            // While paused: Continue + End Meeting + audio toggles
-                            HStack(spacing: 8) {
-                                Button(action: { viewModel.continueRecording() }) {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "record.circle")
-                                            .foregroundColor(.red)
-                                        Text("Continue")
-                                    }
-                                }
-
-                                Button(action: { showEndRecordingConfirmation = true }) {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "stop.circle.fill")
-                                            .foregroundColor(.red)
-                                        Text("End Meeting")
-                                    }
-                                }
-
-                                Text(viewModel.recordingTime)
-                                    .monospacedDigit()
-                                    .foregroundColor(.secondary)
-
-                                Text("Paused")
-                                    .font(.caption)
-                                    .foregroundColor(.orange)
-
-                                AudioSourceToggles(captureMicrophone: $captureMicrophone, captureSystemAudio: $captureSystemAudio)
-                            }
-                        } else if viewModel.isNewMeetingMode && viewModel.recordingSession?.playbackAudioFileURL == nil {
-                            HStack(spacing: 8) {
-                                Button(action: { viewModel.startRecording() }) {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "record.circle")
-                                        Text("Record")
-                                    }
-                                }
-                                .disabled(!captureMicrophone && !captureSystemAudio)
-
-                                AudioSourceToggles(captureMicrophone: $captureMicrophone, captureSystemAudio: $captureSystemAudio)
-                            }
-                        } else if viewModel.recordingSession?.playbackAudioFileURL != nil {
-                            Button(action: {
-                                if viewModel.isPlaying {
-                                    viewModel.pausePlayback()
-                                } else {
-                                    viewModel.playRecording()
-                                }
-                            }) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: viewModel.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                                    Text(viewModel.isPlaying ? "Pause" : "Play")
-                                }
-                            }
-                        }
-                    }
-
-                    // Tab picker
-                    Picker("View", selection: $selectedTab) {
-                        Text("Transcript").tag(0)
-                        Text("Summary").tag(1)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 200)
-                }
+                toolbarPrincipal
             }
-
-            ToolbarItem(placement: .automatic) {
-                if !viewModel.isRecording && !viewModel.isPaused && !viewModel.isNewMeetingMode &&
-                    viewModel.recordingSession != nil &&
-                    (!viewModel.transcription.isEmpty || !viewModel.summary.isEmpty) {
-                    Button(action: {
-                        viewModel.exportCombinedMarkdown()
-                    }) {
-                        Label("Share", systemImage: "square.and.arrow.up")
-                    }
-                    .help("Export meeting as Markdown")
+            ToolbarItem {
+                Picker("View", selection: $selectedTab) {
+                    Text("Transcript").tag(0)
+                    Text("Summary").tag(1)
                 }
+                .pickerStyle(.segmented)
+                .frame(width: 200)
             }
-
             ToolbarItem(placement: .automatic) {
-                Button(action: {
-                    openWindow(id: "settings")
-                }) {
+                shareButton
+            }
+            ToolbarItem(placement: .automatic) {
+                Button(action: { openWindow(id: "settings") }) {
                     Label("Settings", systemImage: "gearshape")
                 }
             }
         }
-        .onChange(of: meetingStore.selectedMeetingId) { oldId, newId in
+        .onChange(of: meetingStore.selectedMeetingId) { _, newId in
             if let id = newId, let meeting = meetingStore.meetings.first(where: { $0.id == id }) {
                 viewModel.loadMeeting(meeting)
             } else if newId == nil {
                 viewModel.prepareNewMeeting()
             }
         }
-        .onAppear {
-            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                let textFieldFocused: Bool = {
-                    guard let responder = event.window?.firstResponder else { return false }
-                    return responder is NSTextView || responder is NSTextField
-                }()
+    }
 
-                // Only act when a playback file is available and not recording
-                guard !viewModel.isRecording && !viewModel.isPaused && !viewModel.isNewMeetingMode,
-                      viewModel.recordingSession?.playbackAudioFileURL != nil else {
-                    return event
+    // MARK: - Extracted Subviews
+
+    private var detailContent: some View {
+        VStack(spacing: 0) {
+            if !viewModel.isRecording && !viewModel.isPaused && !viewModel.isNewMeetingMode &&
+                viewModel.recordingSession?.playbackAudioFileURL != nil {
+                PlaybackTimelineView(viewModel: viewModel)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                Divider()
+            }
+
+            MeetingDetailView(
+                viewModel: viewModel,
+                modelManager: modelManager,
+                selectedTab: $selectedTab
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var toolbarPrincipal: some View {
+        if viewModel.isRecording || viewModel.isStartingRecording {
+            recordingToolbar
+        } else if viewModel.isPaused {
+            pausedToolbar
+        } else if viewModel.isNewMeetingMode && viewModel.recordingSession?.playbackAudioFileURL == nil {
+            newMeetingToolbar
+        } else if viewModel.recordingSession?.playbackAudioFileURL != nil {
+            playbackToolbar
+        }
+    }
+
+    private var recordingToolbar: some View {
+        HStack(spacing: 8) {
+            Button(action: {
+                if viewModel.recordingState == .recording {
+                    viewModel.pauseRecording()
                 }
-
-                // Cmd+P — play/pause (works even when typing in notes)
-                if event.keyCode == 35 && event.modifierFlags.contains(.command) {
-                    if viewModel.isPlaying { viewModel.pausePlayback() } else { viewModel.playRecording() }
-                    return nil
+            }) {
+                HStack(spacing: 6) {
+                    if viewModel.isStartingRecording {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "pause.circle.fill")
+                            .foregroundColor(.orange)
+                    }
+                    Text(viewModel.isRecording ? viewModel.recordingTime : "Starting...")
+                        .monospacedDigit()
                 }
+            }
+            .disabled(viewModel.isStartingRecording)
 
-                // Remaining shortcuts only work when no text field is focused
-                guard !textFieldFocused else { return event }
-
-                switch event.keyCode {
-                case 49: // Space — play/pause
-                    if viewModel.isPlaying { viewModel.pausePlayback() } else { viewModel.playRecording() }
-                    return nil
-
-                case 123: // Left arrow — seek backward
-                    let step: TimeInterval = event.modifierFlags.contains(.shift) ? 30 : 5
-                    viewModel.seekPlayback(to: viewModel.playbackCurrentTime - step)
-                    return nil
-
-                case 124: // Right arrow — seek forward
-                    let step: TimeInterval = event.modifierFlags.contains(.shift) ? 30 : 5
-                    viewModel.seekPlayback(to: viewModel.playbackCurrentTime + step)
-                    return nil
-
-                default:
-                    return event
+            Button(action: { showEndRecordingConfirmation = true }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "stop.circle.fill")
+                        .foregroundColor(.red)
+                    Text("End")
                 }
+            }
+            .disabled(viewModel.isStartingRecording)
+        }
+    }
+
+    private var pausedToolbar: some View {
+        HStack(spacing: 8) {
+            Button(action: { viewModel.continueRecording() }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "record.circle")
+                        .foregroundColor(.red)
+                    Text("Continue")
+                }
+            }
+
+            Button(action: { showEndRecordingConfirmation = true }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "stop.circle.fill")
+                        .foregroundColor(.red)
+                    Text("End Meeting")
+                }
+            }
+
+            Text(viewModel.recordingTime)
+                .monospacedDigit()
+                .foregroundColor(.secondary)
+
+            Text("Paused")
+                .font(.caption)
+                .foregroundColor(.orange)
+
+            AudioSourceToggles(captureMicrophone: $captureMicrophone, captureSystemAudio: $captureSystemAudio)
+        }
+    }
+
+    private var newMeetingToolbar: some View {
+        HStack(spacing: 8) {
+            Button(action: { viewModel.startRecording() }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "record.circle")
+                    Text("Record")
+                }
+            }
+            .disabled(!captureMicrophone && !captureSystemAudio)
+
+            AudioSourceToggles(captureMicrophone: $captureMicrophone, captureSystemAudio: $captureSystemAudio)
+        }
+    }
+
+    private var playbackToolbar: some View {
+        Button(action: {
+            if viewModel.isPlaying { viewModel.pausePlayback() } else { viewModel.playRecording() }
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: viewModel.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                Text(viewModel.isPlaying ? "Pause" : "Play")
             }
         }
-        .onDisappear {
-            if let monitor = keyMonitor {
-                NSEvent.removeMonitor(monitor)
-                keyMonitor = nil
+    }
+
+    @ViewBuilder
+    private var shareButton: some View {
+        if !viewModel.isRecording && !viewModel.isPaused && !viewModel.isNewMeetingMode &&
+            viewModel.recordingSession != nil &&
+            (!viewModel.transcription.isEmpty || !viewModel.summary.isEmpty) {
+            Button(action: { viewModel.exportCombinedMarkdown() }) {
+                Label("Share", systemImage: "square.and.arrow.up")
             }
-            // Flush any pending notes so they aren't lost on window close / app quit
-            viewModel.saveNotes()
+            .help("Export meeting as Markdown")
+        }
+    }
+
+    // MARK: - Key Monitor
+
+    private func installKeyMonitor() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let textFieldFocused: Bool = {
+                guard let responder = event.window?.firstResponder else { return false }
+                return responder is NSTextView || responder is NSTextField
+            }()
+
+            // Only act when a playback file is available and not recording
+            guard !viewModel.isRecording && !viewModel.isPaused && !viewModel.isNewMeetingMode,
+                  viewModel.recordingSession?.playbackAudioFileURL != nil else {
+                return event
+            }
+
+            // Cmd+P — play/pause (works even when typing in notes)
+            if event.keyCode == 35 && event.modifierFlags.contains(.command) {
+                if viewModel.isPlaying { viewModel.pausePlayback() } else { viewModel.playRecording() }
+                return nil
+            }
+
+            // Remaining shortcuts only work when no text field is focused
+            guard !textFieldFocused else { return event }
+
+            switch event.keyCode {
+            case 49: // Space — play/pause
+                if viewModel.isPlaying { viewModel.pausePlayback() } else { viewModel.playRecording() }
+                return nil
+
+            case 123: // Left arrow — seek backward
+                let step: TimeInterval = event.modifierFlags.contains(.shift) ? 30 : 5
+                viewModel.seekPlayback(to: viewModel.playbackCurrentTime - step)
+                return nil
+
+            case 124: // Right arrow — seek forward
+                let step: TimeInterval = event.modifierFlags.contains(.shift) ? 30 : 5
+                viewModel.seekPlayback(to: viewModel.playbackCurrentTime + step)
+                return nil
+
+            default:
+                return event
+            }
         }
     }
 }

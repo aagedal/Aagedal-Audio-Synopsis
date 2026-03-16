@@ -75,6 +75,15 @@ class MeetingViewModel: ObservableObject {
         playbackManager.duration
     }
 
+    var playbackRate: Float {
+        playbackManager.playbackRate
+    }
+
+    func cyclePlaybackRate() {
+        playbackManager.cycleRate()
+        objectWillChange.send()
+    }
+
     var currentRecordingTimeInterval: TimeInterval {
         recordingManager.recordingTime
     }
