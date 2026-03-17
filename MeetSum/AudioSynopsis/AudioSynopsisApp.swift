@@ -65,8 +65,9 @@ struct MeetSumApp: App {
         Window("Settings", id: "settings") {
             SettingsView()
                 .environmentObject(modelManager)
+                .environmentObject(llamaServerManager)
         }
-        .defaultSize(width: 650, height: 550)
+        .defaultSize(width: 780, height: 620)
         .windowResizability(.contentSize)
     }
 }

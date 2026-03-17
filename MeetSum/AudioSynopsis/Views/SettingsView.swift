@@ -13,6 +13,7 @@ import MLXLMCommon
 
 struct SettingsView: View {
     @EnvironmentObject var modelManager: ModelManager
+    @EnvironmentObject var llamaServerManager: LlamaServerManager
 
     @State private var showingWhisperDirectoryPicker = false
     @State private var showingMLXDirectoryPicker = false
@@ -51,6 +52,8 @@ struct SettingsView: View {
                     mlxDirectorySection
                     Divider()
                     dataDirectorySection
+                    Divider()
+                    llamaServerSection
                 }
                 .padding()
             }
@@ -63,17 +66,7 @@ struct SettingsView: View {
                 VStack(spacing: 24) {
                     transcriptionLanguageSection
                     Divider()
-                    installedModelsSection
-
-                    if !modelManager.customModels.isEmpty {
-                        Divider()
-                        customModelsSection
-                    }
-
-                    Divider()
-                    availableWhisperModelsSection
-                    Divider()
-                    customWhisperPathsSection
+                    activeWhisperModelIndicator
                 }
                 .padding()
             }
@@ -92,13 +85,10 @@ struct SettingsView: View {
                     Divider()
                     summarizationLanguageSection
 
+                    Divider()
+                    activeSummarizationModelIndicator
+
                     if selectedEngine == .mlx {
-                        Divider()
-                        installedMLXModelsSection
-                        Divider()
-                        availableMLXModelsSection
-                        Divider()
-                        customMLXPathsSection
                         Divider()
                         summaryLengthSection
                         Divider()
@@ -107,9 +97,9 @@ struct SettingsView: View {
                         thinkingSection
                     } else if selectedEngine == .gguf {
                         Divider()
-                        ggufModelSettingsSection
-                        Divider()
                         summaryLengthSection
+                        Divider()
+                        ggufContextSizeSection
                         Divider()
                         thinkingSection
                     }
@@ -137,8 +127,57 @@ struct SettingsView: View {
             .tabItem {
                 Label("Chat", systemImage: "bubble.left.and.bubble.right")
             }
+
+            // Models tab
+            ScrollView {
+                VStack(spacing: 24) {
+                    if let error = modelManager.error {
+                        Text(error.localizedDescription)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    Label("Whisper Models", systemImage: "waveform")
+                        .font(.title3.weight(.semibold))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    installedModelsSection
+
+                    if !modelManager.customModels.isEmpty {
+                        customModelsSection
+                    }
+
+                    availableWhisperModelsSection
+                    customWhisperPathsSection
+
+                    Divider()
+
+                    Label("MLX Models", systemImage: "brain")
+                        .font(.title3.weight(.semibold))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    installedMLXModelsSection
+                    availableMLXModelsSection
+                    customMLXPathsSection
+
+                    Divider()
+
+                    Label("GGUF Models", systemImage: "cpu")
+                        .font(.title3.weight(.semibold))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    installedGGUFModelsSection
+                    availableGGUFModelsSection
+                    customGGUFPathsSection
+                }
+                .padding()
+            }
+            .tabItem {
+                Label("Models", systemImage: "arrow.down.circle")
+            }
         }
-        .frame(width: 620, height: 520)
+        .frame(width: 750, height: 590)
         .fileImporter(
             isPresented: $showingWhisperDirectoryPicker,
             allowedContentTypes: [.folder],
@@ -334,13 +373,6 @@ struct SettingsView: View {
                 .font(.headline)
                 .foregroundColor(.green)
 
-            if let activeName = (installedWhisperModels + modelManager.customModels)
-                .first(where: { $0.id == selectedWhisperModel })?.name {
-                Text("Active: \(activeName)")
-                    .font(.subheadline)
-                    .foregroundColor(.blue)
-            }
-
             if installedWhisperModels.isEmpty && modelManager.customModels.isEmpty {
                 Text("No Whisper models installed")
                     .font(.subheadline)
@@ -356,27 +388,14 @@ struct SettingsView: View {
     }
 
     private func installedModelRow(_ model: ModelMetadata) -> some View {
-        let isActive = selectedWhisperModel == model.id
-
-        return HStack {
-            Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
-                .foregroundColor(isActive ? .green : .secondary)
+        HStack {
+            Image(systemName: "waveform")
+                .foregroundColor(.blue)
                 .frame(width: 30)
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(model.name)
-                        .font(.subheadline.weight(.medium))
-                    if isActive {
-                        Text("Active")
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.green.opacity(0.15))
-                            .foregroundColor(.green)
-                            .cornerRadius(4)
-                    }
-                }
+                Text(model.name)
+                    .font(.subheadline.weight(.medium))
                 Text(model.description)
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -388,15 +407,6 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-            if !isActive {
-                Button("Use") {
-                    selectedWhisperModel = model.id
-                    ModelSettings.selectedWhisperModel = model.id
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-
             Button(action: {
                 modelToDelete = model
             }) {
@@ -406,7 +416,7 @@ struct SettingsView: View {
             .buttonStyle(.plain)
         }
         .padding()
-        .background(isActive ? Color.blue.opacity(0.05) : Color(NSColor.controlBackgroundColor))
+        .background(Color(NSColor.controlBackgroundColor))
         .cornerRadius(8)
     }
 
@@ -494,12 +504,6 @@ struct SettingsView: View {
                 .font(.headline)
                 .foregroundColor(.green)
 
-            if let activeName = cachedMLXModels.first(where: { ($0.huggingFaceId ?? $0.id) == selectedMLXModel })?.name {
-                Text("Active: \(activeName)")
-                    .font(.subheadline)
-                    .foregroundColor(.blue)
-            }
-
             if cachedMLXModels.isEmpty {
                 Text("No MLX models cached")
                     .font(.subheadline)
@@ -521,29 +525,15 @@ struct SettingsView: View {
     }
 
     private func installedMLXModelRow(_ model: ModelMetadata) -> some View {
-        let modelId = model.huggingFaceId ?? model.id
-        let isActive = selectedMLXModel == modelId
-
-        return VStack(spacing: 0) {
+        VStack(spacing: 0) {
             HStack {
-                Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
-                    .foregroundColor(isActive ? .green : .secondary)
+                Image(systemName: "brain")
+                    .foregroundColor(.purple)
                     .frame(width: 30)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(model.name)
-                            .font(.subheadline.weight(.medium))
-                        if isActive {
-                            Text("Active")
-                                .font(.caption2)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.green.opacity(0.15))
-                                .foregroundColor(.green)
-                                .cornerRadius(4)
-                        }
-                    }
+                    Text(model.name)
+                        .font(.subheadline.weight(.medium))
                     Text(model.description)
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -555,32 +545,6 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding(.horizontal, 8)
-
-                if isActive {
-                    if mlxLoader.isLoaded && mlxLoader.downloadingModelId == modelId {
-                        HStack(spacing: 4) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                            Text("Ready")
-                                .font(.caption)
-                                .foregroundColor(.green)
-                        }
-                    } else {
-                        Button("Verify") {
-                            mlxLoader.downloadAndLoad(modelId: modelId, sizeBytes: model.sizeBytes)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                    }
-                } else {
-                    Button("Use") {
-                        selectedMLXModel = modelId
-                        ModelSettings.selectedMLXModel = modelId
-                        mlxLoader.reset()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
 
                 Button(action: {
                     clearMLXModelCache(model)
@@ -607,7 +571,7 @@ struct SettingsView: View {
             .padding(.top, 8)
         }
         .padding()
-        .background(isActive ? Color.blue.opacity(0.05) : Color(NSColor.controlBackgroundColor))
+        .background(Color(NSColor.controlBackgroundColor))
         .cornerRadius(8)
     }
 
@@ -747,6 +711,7 @@ struct SettingsView: View {
             ForEach(ModelMetadata.whisperModels(for: whisperCategory)) { model in
                 availableModelRow(model)
             }
+
         }
     }
 
@@ -873,6 +838,125 @@ struct SettingsView: View {
                 .padding()
                 .background(Color(NSColor.controlBackgroundColor))
                 .cornerRadius(8)
+            }
+        }
+    }
+
+    // MARK: - Llama Server Section
+
+    @State private var llamaServerError: String?
+
+    private var llamaServerSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("llama-server (GGUF)", systemImage: "server.rack")
+                .font(.headline)
+
+            Text("The llama-server binary is required for GGUF model inference. Version: \(LlamaServerManager.llamaCppVersion)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            HStack {
+                if llamaServerManager.isBinaryAvailable {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                    Text("Installed")
+                        .font(.subheadline)
+                } else {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.red)
+                    Text("Not installed")
+                        .font(.subheadline)
+                }
+
+                Spacer()
+
+                if llamaServerManager.isDownloadingBinary {
+                    Button(action: {
+                        llamaServerManager.cancelBinaryDownload()
+                    }) {
+                        Label("Cancel", systemImage: "xmark.circle")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else if llamaServerManager.isBinaryAvailable {
+                    Button(action: {
+                        llamaServerError = nil
+                        Task {
+                            do {
+                                try await llamaServerManager.updateLlamaServer()
+                            } catch {
+                                llamaServerError = error.localizedDescription
+                            }
+                        }
+                    }) {
+                        Label("Re-download", systemImage: "arrow.clockwise")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else {
+                    Button(action: {
+                        llamaServerError = nil
+                        Task {
+                            do {
+                                try await llamaServerManager.downloadLlamaServer()
+                            } catch {
+                                llamaServerError = error.localizedDescription
+                            }
+                        }
+                    }) {
+                        Label("Download", systemImage: "arrow.down.circle.fill")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+            }
+            .padding()
+            .background(Color(NSColor.controlBackgroundColor))
+            .cornerRadius(8)
+
+            if llamaServerManager.isDownloadingBinary {
+                if let progress = llamaServerManager.binaryDownloadProgress {
+                    VStack(spacing: 6) {
+                        if progress.isConnecting {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            ProgressView(value: progress.fractionCompleted)
+                                .progressViewStyle(.linear)
+                        }
+                        HStack {
+                            if progress.isConnecting {
+                                Text("Connecting...")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            } else {
+                                Text("\(progress.downloadedFormatted) of \(progress.totalFormatted)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            if progress.bytesPerSecond > 0 {
+                                Text(progress.speedFormatted)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            if !progress.isConnecting {
+                                Text("\(progress.percentComplete)%")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let error = llamaServerError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.red)
             }
         }
     }
@@ -1116,37 +1200,11 @@ struct SettingsView: View {
         ModelMetadata.ggufModels.filter { modelManager.isModelInstalled($0.id) }
     }
 
-    private var ggufModelSettingsSection: some View {
-        VStack(spacing: 24) {
-            installedGGUFModelsSection
-            Divider()
-            availableGGUFModelsSection
-
-            if let error = modelManager.error {
-                Text(error.localizedDescription)
-                    .font(.caption)
-                    .foregroundColor(.red)
-            }
-
-            Divider()
-            customGGUFPathsSection
-            Divider()
-            ggufContextSizeSection
-        }
-    }
-
     private var installedGGUFModelsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Installed GGUF Models", systemImage: "checkmark.circle.fill")
                 .font(.headline)
                 .foregroundColor(.green)
-
-            if let activeName = installedGGUFModels.first(where: { $0.id == selectedGGUFModel })?.name
-                ?? ModelSettings.customGGUFModels.first(where: { $0.id == selectedGGUFModel })?.name {
-                Text("Active: \(activeName)")
-                    .font(.subheadline)
-                    .foregroundColor(.blue)
-            }
 
             if installedGGUFModels.isEmpty && ModelSettings.customGGUFModels.isEmpty {
                 Text("No GGUF models installed")
@@ -1163,27 +1221,14 @@ struct SettingsView: View {
     }
 
     private func installedGGUFModelRow(_ model: ModelMetadata) -> some View {
-        let isActive = selectedGGUFModel == model.id
-
-        return HStack {
-            Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
-                .foregroundColor(isActive ? .green : .secondary)
+        HStack {
+            Image(systemName: "cpu")
+                .foregroundColor(.purple)
                 .frame(width: 30)
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(model.name)
-                        .font(.subheadline.weight(.medium))
-                    if isActive {
-                        Text("Active")
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.green.opacity(0.15))
-                            .foregroundColor(.green)
-                            .cornerRadius(4)
-                    }
-                }
+                Text(model.name)
+                    .font(.subheadline.weight(.medium))
                 Text(model.description)
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -1196,15 +1241,6 @@ struct SettingsView: View {
                 .foregroundColor(.secondary)
                 .padding(.horizontal, 8)
 
-            if !isActive {
-                Button("Use") {
-                    selectedGGUFModel = model.id
-                    ModelSettings.selectedGGUFModel = model.id
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-
             Button(action: {
                 modelToDelete = model
             }) {
@@ -1214,7 +1250,7 @@ struct SettingsView: View {
             .buttonStyle(.plain)
         }
         .padding()
-        .background(isActive ? Color.blue.opacity(0.05) : Color(NSColor.controlBackgroundColor))
+        .background(Color(NSColor.controlBackgroundColor))
         .cornerRadius(8)
     }
 
@@ -1358,28 +1394,16 @@ struct SettingsView: View {
     }
 
     private func customGGUFPathRow(_ entry: CustomModelEntry) -> some View {
-        let isActive = selectedGGUFModel == entry.id
         let url = entry.resolveURL()
 
         return HStack {
-            Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
-                .foregroundColor(isActive ? .green : .secondary)
+            Image(systemName: "cpu")
+                .foregroundColor(.purple)
                 .frame(width: 30)
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(entry.name)
-                        .font(.subheadline.weight(.medium))
-                    if isActive {
-                        Text("Active")
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.green.opacity(0.15))
-                            .foregroundColor(.green)
-                            .cornerRadius(4)
-                    }
-                }
+                Text(entry.name)
+                    .font(.subheadline.weight(.medium))
                 if let url = url {
                     Text(url.path)
                         .font(.caption)
@@ -1395,15 +1419,6 @@ struct SettingsView: View {
 
             Spacer()
 
-            if !isActive && url != nil {
-                Button("Use") {
-                    selectedGGUFModel = entry.id
-                    ModelSettings.selectedGGUFModel = entry.id
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-
             Button(action: {
                 removeCustomGGUFModel(entry)
             }) {
@@ -1413,7 +1428,7 @@ struct SettingsView: View {
             .buttonStyle(.plain)
         }
         .padding()
-        .background(isActive ? Color.blue.opacity(0.05) : Color(NSColor.controlBackgroundColor))
+        .background(Color(NSColor.controlBackgroundColor))
         .cornerRadius(8)
     }
 
@@ -1438,29 +1453,258 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Active Model Indicators
+
+    private var activeWhisperModelIndicator: some View {
+        let installed = installedWhisperModels + modelManager.customModels
+        let customPaths = ModelSettings.customWhisperModels
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Label("Transcription Model", systemImage: "waveform")
+                .font(.headline)
+
+            Text("Select the Whisper model used for transcription. Download more models in the Models tab.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if installed.isEmpty && customPaths.isEmpty {
+                Text("No models installed — download one in the Models tab.")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .padding()
+            } else {
+                ForEach(installed) { model in
+                    whisperModelPickerRow(id: model.id, name: model.name, detail: model.sizeFormatted)
+                }
+                ForEach(customPaths) { entry in
+                    whisperModelPickerRow(id: entry.id, name: entry.name, detail: entry.resolveURL()?.lastPathComponent ?? "Custom")
+                }
+            }
+        }
+    }
+
+    private func whisperModelPickerRow(id: String, name: String, detail: String) -> some View {
+        let isActive = selectedWhisperModel == id
+
+        return HStack {
+            Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
+                .foregroundColor(isActive ? .green : .secondary)
+                .frame(width: 30)
+
+            Text(name)
+                .font(.subheadline.weight(.medium))
+
+            Spacer()
+
+            Text(detail)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if !isActive {
+                Button("Use") {
+                    selectedWhisperModel = id
+                    ModelSettings.selectedWhisperModel = id
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding()
+        .background(isActive ? Color.blue.opacity(0.05) : Color(NSColor.controlBackgroundColor))
+        .cornerRadius(8)
+    }
+
+    private var activeSummarizationModelIndicator: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Summarization Model", systemImage: "sparkles")
+                .font(.headline)
+
+            Text("Select the model used for summarization. Download more models in the Models tab.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            switch selectedEngine {
+            case .appleIntelligence:
+                HStack {
+                    Image(systemName: "apple.logo")
+                        .foregroundColor(.green)
+                    Text("Apple Intelligence")
+                        .font(.subheadline.weight(.medium))
+                }
+                .padding()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.blue.opacity(0.05))
+                .cornerRadius(8)
+
+            case .mlx:
+                let installed = cachedMLXModels
+                let customPaths = ModelSettings.customMLXModels
+
+                if installed.isEmpty && customPaths.isEmpty {
+                    Text("No MLX models installed — download one in the Models tab.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .padding()
+                } else {
+                    ForEach(installed) { model in
+                        mlxModelPickerRow(id: model.huggingFaceId ?? model.id, name: model.name, detail: model.sizeFormatted)
+                    }
+                    ForEach(customPaths) { entry in
+                        mlxModelPickerRow(id: entry.id, name: entry.name, detail: "Custom")
+                    }
+                }
+
+            case .gguf:
+                let installed = installedGGUFModels
+                let customPaths = ModelSettings.customGGUFModels
+
+                if installed.isEmpty && customPaths.isEmpty {
+                    Text("No GGUF models installed — download one in the Models tab.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .padding()
+                } else {
+                    ForEach(installed) { model in
+                        ggufModelPickerRow(id: model.id, name: model.name, detail: model.sizeFormatted)
+                    }
+                    ForEach(customPaths) { entry in
+                        ggufModelPickerRow(id: entry.id, name: entry.name, detail: "Custom")
+                    }
+                }
+            }
+        }
+    }
+
+    private func mlxModelPickerRow(id: String, name: String, detail: String) -> some View {
+        let isActive = selectedMLXModel == id
+
+        return HStack {
+            Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
+                .foregroundColor(isActive ? .green : .secondary)
+                .frame(width: 30)
+
+            Text(name)
+                .font(.subheadline.weight(.medium))
+
+            Spacer()
+
+            Text(detail)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if !isActive {
+                Button("Use") {
+                    selectedMLXModel = id
+                    ModelSettings.selectedMLXModel = id
+                    mlxLoader.reset()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding()
+        .background(isActive ? Color.blue.opacity(0.05) : Color(NSColor.controlBackgroundColor))
+        .cornerRadius(8)
+    }
+
+    private func ggufModelPickerRow(id: String, name: String, detail: String) -> some View {
+        let isActive = selectedGGUFModel == id
+
+        return HStack {
+            Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
+                .foregroundColor(isActive ? .green : .secondary)
+                .frame(width: 30)
+
+            Text(name)
+                .font(.subheadline.weight(.medium))
+
+            Spacer()
+
+            Text(detail)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if !isActive {
+                Button("Use") {
+                    selectedGGUFModel = id
+                    ModelSettings.selectedGGUFModel = id
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding()
+        .background(isActive ? Color.blue.opacity(0.05) : Color(NSColor.controlBackgroundColor))
+        .cornerRadius(8)
+    }
+
     private var chatModelSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if chatEngine == .mlx {
-                // MLX uses the same model as summarization
-                Label("Chat Model (MLX)", systemImage: "cpu")
-                    .font(.headline)
+            Label("Chat Model", systemImage: "cpu")
+                .font(.headline)
 
-                Text("The Chat tab uses the same MLX model selected in the Summarization tab.")
+            if chatEngine == .mlx {
+                Text("Uses the same MLX model selected in the Summarization tab.")
                     .font(.caption)
                     .foregroundColor(.secondary)
 
-                HStack {
-                    Text("Current model:")
-                        .font(.subheadline)
-                    Text(ModelSettings.selectedMLXModel)
-                        .font(.subheadline)
-                        .foregroundColor(.blue)
+                if let model = ModelMetadata.allModels.first(where: { ($0.huggingFaceId ?? $0.id) == selectedMLXModel && $0.type == .mlx }) {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                        Text(model.name)
+                            .font(.subheadline.weight(.medium))
+                        Text("(\(model.sizeFormatted))")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.blue.opacity(0.05))
+                    .cornerRadius(8)
+                } else {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                        Text(selectedMLXModel)
+                            .font(.subheadline.weight(.medium))
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.blue.opacity(0.05))
+                    .cornerRadius(8)
                 }
             } else {
-                Label("Chat Model (GGUF)", systemImage: "cpu")
-                    .font(.headline)
+                Text("Uses the same GGUF model selected in the Summarization tab.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
 
-                ggufModelSettingsSection
+                if let model = ModelMetadata.ggufModels.first(where: { $0.id == selectedGGUFModel }) {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                        Text(model.name)
+                            .font(.subheadline.weight(.medium))
+                        Text("(\(model.sizeFormatted))")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.blue.opacity(0.05))
+                    .cornerRadius(8)
+                } else if let custom = ModelSettings.customGGUFModels.first(where: { $0.id == selectedGGUFModel }) {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                        Text(custom.name)
+                            .font(.subheadline.weight(.medium))
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.blue.opacity(0.05))
+                    .cornerRadius(8)
+                }
             }
         }
     }
@@ -1537,28 +1781,16 @@ struct SettingsView: View {
     }
 
     private func customWhisperPathRow(_ entry: CustomModelEntry) -> some View {
-        let isActive = selectedWhisperModel == entry.id
         let url = entry.resolveURL()
 
         return HStack {
-            Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
-                .foregroundColor(isActive ? .green : .secondary)
+            Image(systemName: "waveform")
+                .foregroundColor(.blue)
                 .frame(width: 30)
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(entry.name)
-                        .font(.subheadline.weight(.medium))
-                    if isActive {
-                        Text("Active")
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.green.opacity(0.15))
-                            .foregroundColor(.green)
-                            .cornerRadius(4)
-                    }
-                }
+                Text(entry.name)
+                    .font(.subheadline.weight(.medium))
                 if let url = url {
                     Text(url.path)
                         .font(.caption)
@@ -1574,15 +1806,6 @@ struct SettingsView: View {
 
             Spacer()
 
-            if !isActive && url != nil {
-                Button("Use") {
-                    selectedWhisperModel = entry.id
-                    ModelSettings.selectedWhisperModel = entry.id
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-
             Button(action: {
                 removeCustomWhisperModel(entry)
             }) {
@@ -1592,7 +1815,7 @@ struct SettingsView: View {
             .buttonStyle(.plain)
         }
         .padding()
-        .background(isActive ? Color.blue.opacity(0.05) : Color(NSColor.controlBackgroundColor))
+        .background(Color(NSColor.controlBackgroundColor))
         .cornerRadius(8)
     }
 
@@ -1631,28 +1854,16 @@ struct SettingsView: View {
     }
 
     private func customMLXPathRow(_ entry: CustomModelEntry) -> some View {
-        let isActive = selectedMLXModel == entry.id
         let url = entry.resolveURL()
 
         return HStack {
-            Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
-                .foregroundColor(isActive ? .green : .secondary)
+            Image(systemName: "brain")
+                .foregroundColor(.purple)
                 .frame(width: 30)
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(entry.name)
-                        .font(.subheadline.weight(.medium))
-                    if isActive {
-                        Text("Active")
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.green.opacity(0.15))
-                            .foregroundColor(.green)
-                            .cornerRadius(4)
-                    }
-                }
+                Text(entry.name)
+                    .font(.subheadline.weight(.medium))
                 if let url = url {
                     Text(url.path)
                         .font(.caption)
@@ -1668,16 +1879,6 @@ struct SettingsView: View {
 
             Spacer()
 
-            if !isActive && url != nil {
-                Button("Use") {
-                    selectedMLXModel = entry.id
-                    ModelSettings.selectedMLXModel = entry.id
-                    mlxLoader.reset()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-
             Button(action: {
                 removeCustomMLXModel(entry)
             }) {
@@ -1687,7 +1888,7 @@ struct SettingsView: View {
             .buttonStyle(.plain)
         }
         .padding()
-        .background(isActive ? Color.blue.opacity(0.05) : Color(NSColor.controlBackgroundColor))
+        .background(Color(NSColor.controlBackgroundColor))
         .cornerRadius(8)
     }
 
@@ -1950,6 +2151,8 @@ struct SettingsView: View {
                 Logger.error("Download failed for \(model.name)", error: error, category: Logger.ui)
                 await MainActor.run {
                     downloadingModels.remove(model.id)
+                    // Belt-and-suspenders: ensure stale progress is cleared
+                    modelManager.downloadProgress.removeValue(forKey: model.id)
                 }
             }
         }

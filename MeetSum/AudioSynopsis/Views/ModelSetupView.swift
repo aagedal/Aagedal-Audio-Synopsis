@@ -181,6 +181,8 @@ struct ModelSetupView: View {
                     Logger.error("Download failed for \(model.name)", error: error, category: Logger.ui)
                     await MainActor.run {
                         downloadingModels.remove(model.id)
+                        // Belt-and-suspenders: ensure stale progress is cleared
+                        modelManager.downloadProgress.removeValue(forKey: model.id)
                     }
                 }
             }

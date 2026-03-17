@@ -8,6 +8,7 @@
 import Foundation
 import Combine
 import AppKit
+import zlib
 
 /// Manages a bundled llama-server process for GGUF model inference
 @MainActor
@@ -25,7 +26,7 @@ class LlamaServerManager: ObservableObject {
     // MARK: - Constants
 
     /// Pinned llama.cpp release version
-    private static let llamaCppVersion = "b8391"
+    static let llamaCppVersion = "b8391"
     private static let downloadURL = URL(string: "https://github.com/ggml-org/llama.cpp/releases/download/\(llamaCppVersion)/llama-\(llamaCppVersion)-bin-macos-arm64.tar.gz")!
     /// Approximate download size for progress estimation
     private static let downloadSizeBytes: Int64 = 38_000_000
@@ -75,13 +76,11 @@ class LlamaServerManager: ObservableObject {
         try await downloadLlamaServer()
     }
 
-    /// Maximum number of retry attempts when a download stalls during connection
+    /// Maximum number of retry attempts when a connection times out
     private static let maxDownloadRetries = 3
-    /// Seconds to wait for first data bytes before retrying the download
-    private static let connectionTimeoutSeconds: TimeInterval = 15
 
     /// Download llama-server from GitHub releases
-    private func downloadLlamaServer() async throws {
+    func downloadLlamaServer() async throws {
         guard let installDir = llamaServerDirectory else {
             throw LlamaServerError.downloadFailed("Cannot determine Application Support directory")
         }
@@ -97,7 +96,7 @@ class LlamaServerManager: ObservableObject {
 
         Logger.info("Downloading llama-server \(Self.llamaCppVersion) from GitHub", category: Logger.processing)
 
-        // Retry loop for connection-phase stalls
+        // Retry loop for connection timeouts
         var lastError: Error?
         for attempt in 1...Self.maxDownloadRetries {
             if attempt > 1 {
@@ -122,28 +121,25 @@ class LlamaServerManager: ObservableObject {
                 return // Success
             } catch {
                 lastError = error
+                let nsError = error as NSError
                 // Don't retry if user cancelled
-                if (error as NSError).code == NSURLErrorCancelled {
+                if nsError.code == NSURLErrorCancelled {
                     isDownloadingBinary = false
                     binaryDownloadProgress = nil
                     downloadTask = nil
                     throw error
                 }
-                // Only retry connection timeouts
-                if let serverError = error as? LlamaServerError,
-                   case .downloadFailed(let reason) = serverError,
-                   reason.contains("Connection timed out") {
-                    Logger.warning("llama-server download stalled in connecting phase (attempt \(attempt)/\(Self.maxDownloadRetries))", category: Logger.processing)
+                // Retry on connection timeout
+                if nsError.code == NSURLErrorTimedOut {
+                    Logger.warning("llama-server connection timed out (attempt \(attempt)/\(Self.maxDownloadRetries))", category: Logger.processing)
                     continue
                 }
                 // For other errors, don't retry
                 isDownloadingBinary = false
                 binaryDownloadProgress = nil
                 downloadTask = nil
-                if (error as NSError).code != NSURLErrorCancelled {
-                    self.error = error
-                    Logger.error("Failed to download llama-server", error: error, category: Logger.processing)
-                }
+                self.error = error
+                Logger.error("Failed to download llama-server", error: error, category: Logger.processing)
                 throw error
             }
         }
@@ -157,7 +153,8 @@ class LlamaServerManager: ObservableObject {
         throw LlamaServerError.downloadFailed("Download failed after \(Self.maxDownloadRetries) connection attempts. Please check your network and try again.")
     }
 
-    /// Single download attempt with connection timeout
+    /// Single download attempt — uses delegate-only downloadTask (no completion handler)
+    /// so that didWriteData fires for real-time progress updates.
     private func attemptBinaryDownload() async throws -> URL {
         let delegate = DownloadDelegate(expectedBytes: Self.downloadSizeBytes) { [weak self] progress in
             Task { @MainActor [weak self] in
@@ -166,132 +163,209 @@ class LlamaServerManager: ObservableObject {
         }
 
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForRequest = 30   // Fires NSURLErrorTimedOut if no data for 30s
         config.timeoutIntervalForResource = 600
-        config.waitsForConnectivity = false  // Fail fast so we can retry instead of silently waiting
         let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
 
-        do {
-            let tarballURL: URL = try await withCheckedThrowingContinuation { continuation in
-                let task = session.downloadTask(with: Self.downloadURL) { tempURL, response, error in
-                    defer { session.finishTasksAndInvalidate() }
-
-                    if let error {
-                        continuation.resume(throwing: error)
-                        return
-                    }
-
-                    guard let httpResponse = response as? HTTPURLResponse,
-                          httpResponse.statusCode == 200,
-                          let tempURL else {
-                        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-                        continuation.resume(throwing: LlamaServerError.downloadFailed("HTTP \(statusCode)"))
-                        return
-                    }
-
-                    // Move to a stable temp location before the closure exits
+        let tarballURL: URL = try await withCheckedThrowingContinuation { continuation in
+            delegate.onComplete = { result in
+                switch result {
+                case .success(let tempURL):
+                    // Rename to .tar.gz so extraction recognizes the format
                     let stableTempURL = FileManager.default.temporaryDirectory
                         .appendingPathComponent("llama-server-\(UUID().uuidString).tar.gz")
                     do {
                         try FileManager.default.moveItem(at: tempURL, to: stableTempURL)
                         continuation.resume(returning: stableTempURL)
                     } catch {
+                        try? FileManager.default.removeItem(at: tempURL)
                         continuation.resume(throwing: error)
                     }
+                case .failure(let error):
+                    continuation.resume(throwing: error)
                 }
-                self.downloadTask = task
-                task.resume()
+            }
 
-                // Connection timeout: cancel the task if no data arrives within the timeout
-                let connectionTimeout = Self.connectionTimeoutSeconds
-                DispatchQueue.global().asyncAfter(deadline: .now() + connectionTimeout) { [weak delegate, weak task] in
-                    guard let delegate = delegate, let task = task else { return }
-                    if !delegate.hasReceivedData && task.state == .running {
-                        Logger.warning("llama-server connection timed out after \(Int(connectionTimeout))s — no data received", category: Logger.processing)
-                        task.cancel()
-                    }
-                }
-            }
-            return tarballURL
-        } catch {
-            // Remap cancellation from connection timeout into a retryable error
-            if (error as NSError).code == NSURLErrorCancelled && !delegate.hasReceivedData {
-                throw LlamaServerError.downloadFailed("Connection timed out waiting for data")
-            }
-            throw error
+            // Use delegate-only downloadTask — no completion handler — so delegate
+            // methods (didWriteData, didFinishDownloadingTo, didCompleteWithError) all fire.
+            let task = session.downloadTask(with: Self.downloadURL)
+            self.downloadTask = task
+            task.resume()
         }
+        return tarballURL
     }
 
-    /// Extract llama-server binary and required dylibs from the release tarball
+    /// Extract llama-server binary and required dylibs from the release tarball.
+    /// Uses pure Swift gzip+tar parsing to work correctly inside the app sandbox
+    /// (spawning /usr/bin/tar via Process is unreliable in sandboxed apps).
     private func extractLlamaServer(tarball: URL, to directory: URL) async throws {
-        // Create the install directory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        let prefix = "llama-\(Self.llamaCppVersion)"
+        let prefix = "llama-\(Self.llamaCppVersion)/"
 
-        // Files we need: the server binary and all dylibs it links against
-        let neededFiles = [
-            "\(prefix)/llama-server",
-            "\(prefix)/libmtmd.0.dylib",
-            "\(prefix)/libllama.0.dylib",
-            "\(prefix)/libggml.0.dylib",
-            "\(prefix)/libggml-cpu.0.dylib",
-            "\(prefix)/libggml-blas.0.dylib",
-            "\(prefix)/libggml-metal.0.dylib",
-            "\(prefix)/libggml-rpc.0.dylib",
-            "\(prefix)/libggml-base.0.dylib"
-        ]
+        // Read and decompress the .tar.gz file
+        let compressedData = try Data(contentsOf: tarball)
+        let tarData = try Self.decompressGzip(compressedData)
 
-        // Use tar to extract only what we need into a temp directory, then move
-        let tempExtractDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("llama-extract-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: tempExtractDir, withIntermediateDirectories: true)
+        Logger.info("Decompressed tarball: \(compressedData.count) -> \(tarData.count) bytes", category: Logger.processing)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-        process.arguments = [
-            "-xzf", tarball.path,
-            "-C", tempExtractDir.path,
-            "--include=\(prefix)/llama-server",
-            "--include=\(prefix)/lib*.dylib"
-        ]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        // Parse tar and extract files we need (server binary + dylibs)
+        var extractedCount = 0
+        var offset = 0
 
-        try process.run()
-        process.waitUntilExit()
+        while offset + 512 <= tarData.count {
+            // Read 512-byte tar header
+            let headerData = tarData[offset..<(offset + 512)]
 
-        guard process.terminationStatus == 0 else {
-            throw LlamaServerError.downloadFailed("Failed to extract llama-server archive (exit code \(process.terminationStatus))")
+            // Check for end-of-archive (two consecutive zero blocks)
+            if headerData.allSatisfy({ $0 == 0 }) { break }
+
+            // Parse filename (first 100 bytes, null-terminated)
+            let nameBytes = headerData[offset..<(offset + 100)]
+            let name = String(bytes: nameBytes.prefix(while: { $0 != 0 }), encoding: .utf8) ?? ""
+
+            // Parse file size (octal string at offset 124, 12 bytes)
+            let sizeBytes = headerData[(offset + 124)..<(offset + 136)]
+            let sizeString = String(bytes: sizeBytes.prefix(while: { $0 != 0 && $0 != 0x20 }), encoding: .utf8) ?? "0"
+            let fileSize = Int(sizeString, radix: 8) ?? 0
+
+            // Parse type flag (byte at offset 156): '0' or '\0' = regular file, '2' = symlink, '5' = directory
+            let typeFlag = headerData[offset + 156]
+
+            // Parse link target for symlinks (100 bytes at offset 157)
+            let linkBytes = headerData[(offset + 157)..<(offset + 257)]
+            let linkTarget = String(bytes: linkBytes.prefix(while: { $0 != 0 }), encoding: .utf8) ?? ""
+
+            // Parse USTAR extended name prefix (bytes 345-500)
+            let prefixBytes = headerData[(offset + 345)..<(offset + 500)]
+            let namePrefix = String(bytes: prefixBytes.prefix(while: { $0 != 0 }), encoding: .utf8) ?? ""
+            let fullName = namePrefix.isEmpty ? name : "\(namePrefix)/\(name)"
+
+            offset += 512 // Move past header
+
+            // Check if this file is under our target prefix
+            guard fullName.hasPrefix(prefix) else {
+                // Skip file data (rounded up to 512-byte blocks)
+                offset += ((fileSize + 511) / 512) * 512
+                continue
+            }
+
+            let localName = String(fullName.dropFirst(prefix.count))
+            guard !localName.isEmpty else {
+                // Skip the directory entry itself
+                offset += ((fileSize + 511) / 512) * 512
+                continue
+            }
+
+            // Only extract llama-server binary and dylibs
+            let isServerBinary = localName == "llama-server"
+            let isDylib = localName.hasSuffix(".dylib")
+            guard isServerBinary || isDylib else {
+                offset += ((fileSize + 511) / 512) * 512
+                continue
+            }
+
+            let destPath = directory.appendingPathComponent(localName)
+
+            if typeFlag == UInt8(ascii: "2") {
+                // Symlink
+                try? FileManager.default.removeItem(at: destPath)
+                try FileManager.default.createSymbolicLink(atPath: destPath.path, withDestinationPath: linkTarget)
+                Logger.debug("Extracted symlink: \(localName) -> \(linkTarget)", category: Logger.processing)
+                extractedCount += 1
+            } else if typeFlag == UInt8(ascii: "0") || typeFlag == 0 {
+                // Regular file
+                guard offset + fileSize <= tarData.count else {
+                    throw LlamaServerError.downloadFailed("Tar archive is truncated at file: \(localName)")
+                }
+                let fileData = tarData[offset..<(offset + fileSize)]
+                try? FileManager.default.removeItem(at: destPath)
+                try fileData.write(to: destPath)
+
+                // Make the server binary executable
+                if isServerBinary {
+                    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destPath.path)
+                }
+
+                Logger.debug("Extracted file: \(localName) (\(fileSize) bytes)", category: Logger.processing)
+                extractedCount += 1
+            }
+
+            // Advance past file data (rounded up to 512-byte blocks)
+            offset += ((fileSize + 511) / 512) * 512
         }
 
-        let extractedDir = tempExtractDir.appendingPathComponent(prefix)
+        // Verify the binary exists
+        let serverPath = directory.appendingPathComponent("llama-server").path
+        guard FileManager.default.fileExists(atPath: serverPath) else {
+            throw LlamaServerError.downloadFailed("llama-server binary not found after extraction (\(extractedCount) files extracted)")
+        }
 
-        // Move extracted files to install directory
-        if let contents = try? FileManager.default.contentsOfDirectory(at: extractedDir, includingPropertiesForKeys: nil) {
+        // Remove quarantine extended attribute from all extracted files.
+        // macOS adds com.apple.quarantine to downloaded files, which prevents execution
+        // with a misleading "The file doesn't exist" error from Process.run().
+        if let contents = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
             for file in contents {
-                let dest = directory.appendingPathComponent(file.lastPathComponent)
-                // Remove existing file if present (e.g. from a previous version)
-                try? FileManager.default.removeItem(at: dest)
-                try FileManager.default.moveItem(at: file, to: dest)
+                removexattr(file.path, "com.apple.quarantine", 0)
             }
         }
 
-        // Resolve symlinks: tar extracts symlinks, but we need the actual .0.dylib files
-        // The release has: libfoo.0.dylib -> libfoo.0.x.y.dylib
-        // After extraction both the symlink and target should be present
+        let attrs = try FileManager.default.attributesOfItem(atPath: serverPath)
+        Logger.info("llama-server extracted successfully (\(extractedCount) files, permissions: \(String(describing: attrs[.posixPermissions])))", category: Logger.processing)
+    }
 
-        // Make the server binary executable
-        let serverPath = directory.appendingPathComponent("llama-server").path
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: serverPath)
-
-        // Clean up temp extraction directory
-        try? FileManager.default.removeItem(at: tempExtractDir)
-
-        // Verify the binary exists
-        guard FileManager.default.isExecutableFile(atPath: serverPath) else {
-            throw LlamaServerError.downloadFailed("llama-server binary not found after extraction")
+    /// Decompress gzip data using zlib (available on all Apple platforms)
+    private static func decompressGzip(_ data: Data) throws -> Data {
+        // Gzip header: 1f 8b
+        guard data.count > 2, data[data.startIndex] == 0x1f, data[data.startIndex + 1] == 0x8b else {
+            throw LlamaServerError.downloadFailed("Not a valid gzip file")
         }
+
+        var result = Data()
+        result.reserveCapacity(data.count * 4)
+
+        // Copy data into a contiguous byte array for zlib
+        let inputBytes = [UInt8](data)
+        let bufferSize = 65536
+        var outputBuffer = [UInt8](repeating: 0, count: bufferSize)
+
+        var stream = z_stream()
+        stream.next_in = UnsafeMutablePointer(mutating: inputBytes)
+        stream.avail_in = UInt32(inputBytes.count)
+
+        // windowBits = 15 + 32 tells zlib to auto-detect gzip or zlib format
+        let initResult = inflateInit2_(&stream, 15 + 32, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
+        guard initResult == Z_OK else {
+            throw LlamaServerError.downloadFailed("zlib inflateInit2 failed: \(initResult)")
+        }
+        defer { inflateEnd(&stream) }
+
+        var inflateStatus: Int32 = Z_OK
+        while inflateStatus != Z_STREAM_END {
+            inflateStatus = outputBuffer.withUnsafeMutableBufferPointer { buf in
+                stream.next_out = buf.baseAddress
+                stream.avail_out = UInt32(bufferSize)
+                return inflate(&stream, Z_NO_FLUSH)
+            }
+            let produced = bufferSize - Int(stream.avail_out)
+            if produced > 0 {
+                result.append(outputBuffer, count: produced)
+            }
+            if inflateStatus != Z_OK && inflateStatus != Z_STREAM_END {
+                throw LlamaServerError.downloadFailed("zlib inflate failed: \(inflateStatus)")
+            }
+        }
+
+        return result
+    }
+
+    /// Re-download llama-server, replacing any existing binary
+    func updateLlamaServer() async throws {
+        // Remove existing binary so downloadLlamaServer installs fresh
+        if let dir = llamaServerDirectory {
+            try? FileManager.default.removeItem(at: dir)
+        }
+        try await downloadLlamaServer()
     }
 
     /// Cancel an in-progress binary download
@@ -492,9 +566,14 @@ class LlamaServerManager: ObservableObject {
             }
         }
         // Check downloaded location in Application Support
+        // Note: use fileExists instead of isExecutableFile — the sandbox may report
+        // downloaded binaries as non-executable even when they have +x permissions.
         if let dir = llamaServerDirectory {
             let downloadedPath = dir.appendingPathComponent("llama-server").path
-            if FileManager.default.isExecutableFile(atPath: downloadedPath) {
+            if FileManager.default.fileExists(atPath: downloadedPath) {
+                // Strip quarantine on every lookup — macOS blocks execution of
+                // quarantined files with a misleading "file doesn't exist" error.
+                removexattr(downloadedPath, "com.apple.quarantine", 0)
                 return downloadedPath
             }
         }

@@ -404,10 +404,8 @@ class ModelManager: ObservableObject {
     
     private var downloadTasks: [String: URLSessionDownloadTask] = [:]
 
-    /// Maximum number of retry attempts when a download stalls during connection
+    /// Maximum number of retry attempts when a connection times out
     private static let maxDownloadRetries = 3
-    /// Seconds to wait for first data bytes before retrying the download
-    private static let connectionTimeoutSeconds: TimeInterval = 15
 
     /// Download a model
     /// - Parameter metadata: Model metadata
@@ -443,48 +441,52 @@ class ModelManager: ObservableObject {
             downloadProgress[metadata.id] = DownloadProgress(fractionCompleted: 0, totalBytesWritten: 0, totalBytesExpected: metadata.sizeBytes, bytesPerSecond: 0)
         }
 
-        // Retry loop for connection-phase stalls
-        var lastError: Error?
-        for attempt in 1...Self.maxDownloadRetries {
-            if attempt > 1 {
-                Logger.info("Download retry attempt \(attempt)/\(Self.maxDownloadRetries) for \(metadata.name)", category: Logger.general)
-                // Reset progress to connecting state between retries
-                await MainActor.run {
-                    downloadProgress[metadata.id] = DownloadProgress(fractionCompleted: 0, totalBytesWritten: 0, totalBytesExpected: metadata.sizeBytes, bytesPerSecond: 0)
+        // Retry loop for connection-phase stalls.
+        // Wrapped in do/catch to guarantee downloadProgress cleanup on ANY failure path.
+        do {
+            var lastError: Error?
+            for attempt in 1...Self.maxDownloadRetries {
+                if attempt > 1 {
+                    Logger.info("Download retry attempt \(attempt)/\(Self.maxDownloadRetries) for \(metadata.name)", category: Logger.general)
+                    // Reset progress to connecting state between retries
+                    await MainActor.run {
+                        downloadProgress[metadata.id] = DownloadProgress(fractionCompleted: 0, totalBytesWritten: 0, totalBytesExpected: metadata.sizeBytes, bytesPerSecond: 0)
+                    }
                 }
-            }
 
-            do {
-                try await attemptDownload(metadata: metadata, destination: destination)
-                return // Success
-            } catch {
-                lastError = error
-                // Don't retry if user cancelled
-                if (error as NSError).code == NSURLErrorCancelled {
+                do {
+                    try await attemptDownload(metadata: metadata, destination: destination)
+                    return // Success
+                } catch {
+                    lastError = error
+                    let nsError = error as NSError
+                    // Don't retry if user cancelled
+                    if nsError.code == NSURLErrorCancelled {
+                        throw error
+                    }
+                    // Retry on connection timeout (URLSession's built-in timeout)
+                    if nsError.code == NSURLErrorTimedOut {
+                        Logger.warning("Connection timed out (attempt \(attempt)/\(Self.maxDownloadRetries))", category: Logger.general)
+                        continue
+                    }
+                    // For other errors, don't retry
                     throw error
                 }
-                // Don't retry if we already received data (a mid-download failure is not a connection stall)
-                if let connectionTimeout = error as? ModelManagerError,
-                   case .downloadFailed(let reason) = connectionTimeout,
-                   reason.contains("Connection timed out") {
-                    Logger.warning("Download stalled in connecting phase (attempt \(attempt)/\(Self.maxDownloadRetries))", category: Logger.general)
-                    continue
-                }
-                // For other errors, don't retry
-                throw error
             }
-        }
 
-        // All retries exhausted
-        Logger.error("Model download failed after \(Self.maxDownloadRetries) attempts", category: Logger.general)
-        await MainActor.run {
-            downloadProgress.removeValue(forKey: metadata.id)
+            // All retries exhausted
+            Logger.error("Model download failed after \(Self.maxDownloadRetries) attempts", category: Logger.general)
             self.error = lastError
+            throw ModelManagerError.downloadFailed("Download failed after \(Self.maxDownloadRetries) connection attempts. Please check your network and try again.")
+        } catch {
+            // Guarantee cleanup of downloadProgress on ALL failure paths
+            downloadProgress.removeValue(forKey: metadata.id)
+            throw error
         }
-        throw ModelManagerError.downloadFailed("Download failed after \(Self.maxDownloadRetries) connection attempts. Please check your network and try again.")
     }
 
-    /// Single download attempt with connection timeout
+    /// Single download attempt — uses delegate-only downloadTask (no completion handler)
+    /// so that didWriteData fires for real-time progress updates.
     private func attemptDownload(metadata: ModelMetadata, destination: URL) async throws {
         let delegate = DownloadDelegate(expectedBytes: metadata.sizeBytes) { progress in
             Task { @MainActor [weak self] in
@@ -492,97 +494,48 @@ class ModelManager: ObservableObject {
             }
         }
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForRequest = 30   // Fires NSURLErrorTimedOut if no data for 30s
         config.timeoutIntervalForResource = 3600
-        config.waitsForConnectivity = false  // Fail fast so we can retry instead of silently waiting
         let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
 
-        do {
-            Logger.info("Downloading from: \(metadata.downloadURL)", category: Logger.general)
+        Logger.info("Downloading from: \(metadata.downloadURL)", category: Logger.general)
 
-            return try await withCheckedThrowingContinuation { continuation in
-                let task = session.downloadTask(with: metadata.downloadURL) { [weak self] tempURL, response, error in
-                    defer { session.finishTasksAndInvalidate() }
-
-                    guard let self = self else {
-                        continuation.resume(throwing: ModelManagerError.downloadFailed("ModelManager was deallocated during download"))
-                        return
-                    }
-
-                    // Remove task from tracking (on main actor)
-                    Task { @MainActor in
-                        self.downloadTasks.removeValue(forKey: metadata.id)
-                    }
-
-                    if let error = error {
-                        // Don't update UI for connection timeout retries — the retry loop handles that
-                        if (error as NSError).code != NSURLErrorCancelled {
-                            Task { @MainActor in
-                                // Only clear progress for non-retryable errors
-                            }
-                        }
-                        continuation.resume(throwing: error)
-                        return
-                    }
-
-                    guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200, let tempURL = tempURL else {
-                        let error = ModelManagerError.downloadFailed("HTTP error: \(response?.description ?? "unknown")")
-                        Task { @MainActor in
-                            self.downloadProgress.removeValue(forKey: metadata.id)
-                            self.error = error
-                            continuation.resume(throwing: error)
-                        }
-                        return
-                    }
-
+        return try await withCheckedThrowingContinuation { continuation in
+            delegate.onComplete = { [weak self] result in
+                switch result {
+                case .success(let tempURL):
                     do {
-                        // Move to destination (fileManager is safe to use from background)
                         try FileManager.default.moveItem(at: tempURL, to: destination)
-
                         Logger.info("Model downloaded successfully: \(metadata.name)", category: Logger.general)
-
                         Task { @MainActor in
-                            self.installedModels.insert(metadata.id)
-                            self.downloadProgress.removeValue(forKey: metadata.id)
-                            continuation.resume()
+                            self?.downloadTasks.removeValue(forKey: metadata.id)
+                            self?.installedModels.insert(metadata.id)
+                            self?.downloadProgress.removeValue(forKey: metadata.id)
                         }
+                        continuation.resume()
                     } catch {
                         Logger.error("Failed to move downloaded model", error: error, category: Logger.general)
+                        try? FileManager.default.removeItem(at: tempURL)
                         Task { @MainActor in
-                            self.downloadProgress.removeValue(forKey: metadata.id)
-                            self.error = error
-                            continuation.resume(throwing: error)
+                            self?.downloadTasks.removeValue(forKey: metadata.id)
+                            self?.downloadProgress.removeValue(forKey: metadata.id)
+                            self?.error = error
                         }
+                        continuation.resume(throwing: error)
                     }
-                }
-
-                // Store task for cancellation
-                self.downloadTasks[metadata.id] = task
-                task.resume()
-
-                // Connection timeout: cancel the task if no data arrives within the timeout
-                let connectionTimeout = Self.connectionTimeoutSeconds
-                DispatchQueue.global().asyncAfter(deadline: .now() + connectionTimeout) { [weak delegate, weak task] in
-                    guard let delegate = delegate, let task = task else { return }
-                    if !delegate.hasReceivedData && task.state == .running {
-                        Logger.warning("Connection timed out after \(Int(connectionTimeout))s — no data received", category: Logger.general)
-                        task.cancel()
-                        // The cancellation will flow through the completion handler
-                        // The retry loop in downloadModel() will catch this and retry
+                case .failure(let error):
+                    Task { @MainActor in
+                        self?.downloadTasks.removeValue(forKey: metadata.id)
                     }
+                    continuation.resume(throwing: error)
                 }
             }
 
-        } catch {
-            // Remap cancellation from connection timeout into a retryable error
-            if (error as NSError).code == NSURLErrorCancelled {
-                // Check if this was our connection timeout (delegate never received data)
-                if !delegate.hasReceivedData {
-                    throw ModelManagerError.downloadFailed("Connection timed out waiting for data")
-                }
-            }
-            Logger.error("Download attempt failed", error: error, category: Logger.general)
-            throw error
+            // Use delegate-only downloadTask — no completion handler — so delegate
+            // methods (didWriteData, didFinishDownloadingTo, didCompleteWithError) all fire.
+            let task = session.downloadTask(with: metadata.downloadURL)
+            self.downloadTasks[metadata.id] = task
+            task.resume()
         }
     }
     
@@ -592,10 +545,7 @@ class ModelManager: ObservableObject {
         Logger.info("Cancelling download for model: \(modelId)", category: Logger.general)
         downloadTasks[modelId]?.cancel()
         downloadTasks.removeValue(forKey: modelId)
-        
-        Task { @MainActor in
-            downloadProgress.removeValue(forKey: modelId)
-        }
+        downloadProgress.removeValue(forKey: modelId)
     }
     
     /// Import a custom model file into the model directory
@@ -669,6 +619,12 @@ class ModelManager: ObservableObject {
 class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
     let onProgress: (DownloadProgress) -> Void
     let expectedBytes: Int64
+
+    /// Called when the download task fully completes, with either the temp file URL or an error.
+    var onComplete: ((Result<URL, Error>) -> Void)?
+
+    private var downloadedURL: URL?
+    private var fileError: Error?
     private var lastReportedPercent: Int = -1
     private var lastTimestamp: CFAbsoluteTime = 0
     private var lastBytesWritten: Int64 = 0
@@ -683,7 +639,34 @@ class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        // Handled by completion handler
+        // Validate HTTP response
+        if let httpResponse = downloadTask.response as? HTTPURLResponse, httpResponse.statusCode != 200 {
+            fileError = ModelManagerError.downloadFailed("HTTP error: \(httpResponse.statusCode)")
+            return
+        }
+
+        // The system deletes `location` after this method returns, so move to a stable temp path
+        let stableURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + "-download")
+        do {
+            try FileManager.default.moveItem(at: location, to: stableURL)
+            downloadedURL = stableURL
+        } catch {
+            fileError = error
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        session.finishTasksAndInvalidate()
+        if let error {
+            onComplete?(.failure(error))
+        } else if let fileError {
+            onComplete?(.failure(fileError))
+        } else if let url = downloadedURL {
+            onComplete?(.success(url))
+        } else {
+            onComplete?(.failure(ModelManagerError.downloadFailed("Download completed but file was not saved")))
+        }
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
